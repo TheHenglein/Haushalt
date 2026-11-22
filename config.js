@@ -8,6 +8,6 @@ window.APP_CONFIG = {
   googleApiKey: "",
 
   // Ordner und Datendatei in Google Drive
-  driveFolder: "Haushalt",
+  driveFolder: "Haushalts-App",
   driveFile: "haushalt.json"
 };
