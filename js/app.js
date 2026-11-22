@@ -1,31 +1,90 @@
 /* Haushalt – App-Hülle: Menü links, Module, Einrichtung des gemeinsamen Haushalts, Einstellungen, Start */
 "use strict";
 
-/* =================================================================== Einstellungen (eigenes Modul) */
-const Einstellungen = {
-  id: "einstellungen", group: null, title: "Einstellungen", icon: "⚙️",
-  view() {
-    const item = (act, icon, t, s) => `<button class="item" data-act="${act}"><span class="ic">${icon}</span><span class="m"><span class="t">${t}</span><span class="s">${s}</span></span><span class="sub">›</span></button>`;
-    const n = db.mitglieder.length;
-    const drive = Sync.mode === "drive";
+/* =================================================================== Einstellungen – ein zentraler Ort
+ * Übersicht mit Abschnitten je Bereich (Allgemein, Finanzen, Haushalt); ein Tipp öffnet eine Unterseite mit Zurück-Pfeil.
+ * Module mit eigenen Einstellungen haben oben ein Zahnrad, das direkt auf ihre Unterseite führt. */
+const SET_PAGES = { haushalt: "Haushalt und Mitglieder", darstellung: "Darstellung", speicher: "Speicherort und Daten", finanzen: "Finanzen" };
+let setPage = null, setReturn = null;
+const setItem = (attr, icon, t, sub, chevron = true) => `<button class="item" ${attr}><span class="ic">${icon}</span><span class="m"><span class="t">${t}</span><span class="s">${sub}</span></span>${chevron ? '<span class="sub">›</span>' : ""}</button>`;
+const secHead = (bereich, title) => `<div class="h3 sec"><span><i class="secdot" style="background:${THEMES[farben()[bereich]]?.acc || "var(--acc)"}"></i>${esc(title)}</span></div>`;
+function settingsOverview() {
+  const n = db.mitglieder.length, drive = Sync.mode === "drive";
+  return `${secHead("app", "Allgemein")}<div class="list">
+      ${setItem('data-spage="haushalt"', "🏠", "Haushalt und Mitglieder", `${esc(db.haushalt.name)}${drive ? ` · ${n} ${n === 1 ? "Person" : "Personen"}` : ""}`)}
+      ${setItem('data-spage="darstellung"', "🎨", "Darstellung", `${({ auto: "Automatisch", light: "Hell", dark: "Dunkel" })[themeMode()]} · Farben`)}
+      ${setItem('data-spage="speicher"', "☁️", "Speicherort und Daten", drive ? "Google Drive · Sicherung" : "nur auf diesem Gerät · Sicherung")}</div>
+    ${secHead("privat", "Finanzen")}<div class="list">
+      ${setItem('data-spage="finanzen"', "💶", "Haushaltsbuch", `Konten, Kategorien, Monat${gewerbeAktiv() ? ", Gewerbe" : ""}`)}</div>
+    ${secHead("haushalt", "Haushalt")}<div class="list">
+      ${HAUSHALT_MODULE.filter((m) => m.settingsView || m.soon).map((m) => m.soon
+        ? `<div class="item soonitem"><span class="ic">${m.icon}</span><span class="m"><span class="t">${esc(m.title)} <span class="tag">bald</span></span><span class="s">kommt mit dem Modul</span></span></div>`
+        : setItem(`data-spage="${m.settingsPage}"`, m.icon, esc(m.title), esc(m.settingsHint?.() || "Einstellungen"))).join("")}</div>
+    <p class="sub" style="text-align:center;margin-top:20px">${APP_NAME} ${APP_VERSION}</p>`;
+}
+function settingsPageView(page) {
+  const drive = Sync.mode === "drive", n = db.mitglieder.length;
+  if (page === "haushalt") return `<div class="list">
+      ${setItem('data-act="hh-rename"', "🏠", "Name des Haushalts", esc(db.haushalt.name))}
+      ${setItem('data-act="members"', "👥", "Mitglieder &amp; Freigabe", drive ? `${n} ${n === 1 ? "Person" : "Personen"} · einladen, entfernen` : "erst mit Google anmelden")}
+      ${drive ? setItem('data-act="hh-switch"', "🔁", "Haushalt wechseln oder beitreten", "anderen Haushalt öffnen") : ""}</div>`;
+  if (page === "darstellung") {
+    const f = farben(), mode = themeMode();
+    const sw = (b) => `<div class="cdots">${Object.entries(THEMES).map(([k, t]) => `<button class="cdot ${f[b] === k ? "on" : ""}" data-farbe="${k}" data-b="${b}" style="background:${t.acc}" aria-label="${esc(t.name)}" title="${esc(t.name)}"></button>`).join("")}</div>`;
+    const grp = (b, label) => `<div class="pick-group">${label} <span class="cname">${esc(THEMES[f[b]]?.name || "")}</span></div>${sw(b)}`;
+    return `<div class="pick-group">Hell oder dunkel</div>
+      <div class="seg">${[["auto", "Automatisch"], ["light", "Hell"], ["dark", "Dunkel"]].map(([k, l]) => `<button data-mode="${k}" class="${mode === k ? "on" : ""}">${l}</button>`).join("")}</div>
+      <p class="sub">Automatisch folgt der Einstellung des Handys.</p>
+      ${grp("app", "Allgemein")}
+      ${grp("privat", "Finanzen · Privat")}
+      ${gewerbeAktiv() ? grp("gewerbe", "Finanzen · Gewerbe") : ""}
+      ${grp("haushalt", "Haushalt")}
+      <p class="sub">Die Darstellung gilt nur für dich, nicht für die anderen im Haushalt.</p>`;
+  }
+  if (page === "speicher") {
     const conn = drive
       ? `<p style="margin-top:0">Angemeldet als <b>${esc(Store.me?.name || Store.me?.email || "")}</b>${Store.me?.name ? `<br><span class="sub">${esc(Store.me.email)}</span>` : ""}</p>
-         <p class="sub">Datei „${esc(CFG.driveFile)}“ ${Sync.ownedByMe ? "in deinem Google Drive (Ordner „" + esc(CFG.driveFolder) + "“)" : "im Google Drive einer anderen Person, für dich freigegeben"}.</p>
+         <p class="sub">Datei „${esc(CFG.driveFile)}“ ${Sync.ownedByMe ? "in deinem Google Drive (Ordner „" + esc(CFG.driveFolder) + "“)" : "im Google Drive einer anderen Person, für dich freigegeben"}.${Data.mine?.konten.length ? " Deine versteckten Konten liegen in einer eigenen Datei in deinem Drive." : ""}</p>
          <div class="btns"><button class="btn small" data-act="sync-now">Jetzt abgleichen</button><button class="btn small ghost" data-act="logout">Abmelden</button></div>`
       : `<p style="margin-top:0">Die Daten liegen nur in diesem Browser. Zum gemeinsamen Nutzen mit Google anmelden.</p>${CFG.googleClientId ? `<button class="btn small primary" data-act="signin">Mit Google anmelden</button>` : `<span class="sub">Google ist noch nicht eingerichtet (config.js).</span>`}`;
-    return `<div class="h3"><span>Haushalt</span></div><div class="list">
-        ${item("hh-rename", "🏠", "Name des Haushalts", esc(db.haushalt.name))}
-        ${item("members", "👥", "Mitglieder &amp; Freigabe", drive ? `${n} ${n === 1 ? "Person" : "Personen"} · einladen, entfernen` : "erst mit Google anmelden")}
-        ${drive ? item("hh-switch", "🔁", "Haushalt wechseln oder beitreten", "anderen Haushalt öffnen") : ""}</div>
-      <div class="h3"><span>Darstellung</span></div><div class="list">
-        ${item("design", "🎨", "Hell/dunkel &amp; Farbe", `${({ auto: "Automatisch", light: "Hell", dark: "Dunkel" })[themeMode()]} · ${THEMES[farben().app]?.name}`)}</div>
-      <div class="h3"><span>Speicherort</span></div><div class="card">${conn}</div>
-      <div class="h3"><span>Daten</span></div><div class="list">
-        ${item("backup", "⬇️", "Sicherung herunterladen", "der ganze Haushalt als Datei")}
-        ${item("restore", "⬆️", "Sicherung einspielen", "ersetzt die Daten für alle Mitglieder")}</div>
-      <p class="sub" style="text-align:center;margin-top:20px">${APP_NAME} ${APP_VERSION} · Stand ${new Date(db.updated).toLocaleString("de-DE")}</p>`;
+    return `<div class="h3"><span>Speicherort</span></div><div class="card">${conn}</div>
+      <div class="h3"><span>Sicherung</span></div><div class="list">
+        ${setItem('data-act="backup"', "⬇️", "Sicherung herunterladen", "der ganze Haushalt + deine privaten Konten")}
+        ${setItem('data-act="restore"', "⬆️", "Sicherung einspielen", "ersetzt die Daten für alle Mitglieder")}</div>
+      <p class="sub" style="text-align:center;margin-top:20px">Stand ${new Date(db.updated).toLocaleString("de-DE")}</p>`;
+  }
+  if (page === "finanzen") return finSettingsView();
+  const pm = pageModule(page); if (pm) return pm.settingsView();
+  return settingsOverview();
+}
+const pageModule = (page) => MODULES.find((m) => m.settingsPage === page && m.settingsView);
+const Einstellungen = {
+  id: "einstellungen", group: null, title: "Einstellungen", icon: "⚙️",
+  bereich: () => setPage === "finanzen" ? "privat" : pageModule(setPage)?.bereich?.() || "app",
+  back: () => !!setPage,
+  goBack: () => settingsBack(),
+  top: () => setPage ? `<b class="crumb"><span>Einstellungen ›</span> ${esc(SET_PAGES[setPage] || pageModule(setPage)?.title || "")}</b>` : "",
+  view: () => setPage ? settingsPageView(setPage) : settingsOverview(),
+  click(e) {
+    const pm = setPage && pageModule(setPage); if (pm?.settingsClick && pm.settingsClick(e)) return true;
+    const pg = e.target.closest("[data-spage]"); if (pg) { openSettings(pg.dataset.spage); return true; }
+    const md = e.target.closest("[data-mode]"); if (md) { lsSet(LS.theme, md.dataset.mode); render(); return true; }
+    const fb = e.target.closest("[data-farbe]"); if (fb) { setFarbe(fb.dataset.b, fb.dataset.farbe); render(); return true; }
+    const fs = e.target.closest("[data-fset]"); if (fs) { finSettingsAct(fs.dataset.fset, fs.dataset.b); return true; }
+    return false;
   }
 };
+/* Unterseite öffnen; `from` = Modul, in das „Zurück“ führen soll (beim Zahnrad) */
+function openSettings(page = null, from = null) {
+  curId = "einstellungen"; lsSet(LS.module, curId);
+  setPage = page; setReturn = from;
+  if (page) history.pushState({ sub: 1 }, "");   // Zurück-Taste des Handys führt zurück
+  render(); window.scrollTo(0, 0);
+}
+function settingsBack() {
+  const r = setReturn; setPage = null; setReturn = null;
+  if (r) goModule(r); else { render(); window.scrollTo(0, 0); }
+}
 
 /* =================================================================== Module & Menü */
 const MODULES = [Finanzen, ...HAUSHALT_MODULE, Einstellungen];
@@ -33,13 +92,18 @@ let curId = lsGet(LS.module, "finanzen");
 const cur = () => MODULES.find((m) => m.id === curId) || Finanzen;
 
 const ICON_MENU = '<path d="M4 7h16M4 12h16M4 17h16"/>';
+const ICON_BACK = '<path d="M19 12H5M12 19l-7-7 7-7"/>';
+const ICON_GEAR = '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>';
 function renderShell() {
   $("#app").innerHTML = `<div class="shell">
+    <aside class="side" id="side" aria-label="Bereiche"></aside>
+    <div class="maincol">
     <header class="topbar"><div class="r1">
-      <button class="iconbtn" data-menu aria-label="Menü öffnen">${svg(ICON_MENU)}</button>
+      <span id="lead"></span>
       <div class="ttl" id="ttl"></div>
+      <span id="gear"></span>
       <button class="sync" id="sync" data-act="sync" aria-label="Speicherstatus"><span class="dot"></span></button></div></header>
-    <div id="banner"></div><main id="view"></main><div id="bottom"></div></div>
+    <div id="banner"></div><div id="bottom"></div><main id="view"></main></div></div>
     <div class="drawer-bg" id="drawer" hidden><aside class="drawer" aria-label="Menü"></aside></div>`;
 }
 function render() {
@@ -47,37 +111,50 @@ function render() {
   if (!stack.length) document.body.style.overflow = "";   // Sicherheitsnetz: Seite nie dauerhaft gesperrt
   const mod = cur();
   applyTheme(mod.bereich?.() || "app");
+  $("#lead").innerHTML = mod.back?.() ? `<button class="iconbtn" data-back aria-label="Zurück">${svg(ICON_BACK)}</button>`
+    : `<button class="iconbtn" data-menu aria-label="Menü öffnen">${svg(ICON_MENU)}</button>`;
   $("#ttl").innerHTML = mod.top?.() || `<b>${esc(mod.title)}</b>`;
+  $("#gear").innerHTML = mod.settingsPage ? `<button class="iconbtn" data-gear aria-label="Einstellungen">${svg(ICON_GEAR)}</button>` : "";
   $("#view").innerHTML = mod.view();
   $("#bottom").innerHTML = mod.bottom?.() || "";
   $(".shell").classList.toggle("has-nav", !!mod.bottom);
+  $(".shell").dataset.mod = mod.id;
+  $("#side").innerHTML = navHTML();
+  mod.afterRender?.();
   if (!$("#drawer").hidden) renderDrawer();
   renderSync();
 }
 function goModule(id) {
+  if (id === "einstellungen") { setPage = null; setReturn = null; }
+  if (id === "rezepte") { rz.open = null; rz.from = null; }
   curId = id; lsSet(LS.module, id); render(); window.scrollTo(0, 0);
   cur().onShow?.();
 }
-function renderDrawer() {
+function renderDrawer() { $("#drawer .drawer").innerHTML = navHTML(); }
+function navHTML() {
   const groups = [...new Set(MODULES.map((m) => m.group).filter(Boolean))];
   const it = (m) => `<button class="di ${m.id === curId ? "on" : ""}" data-nav="${m.id}"><span class="e">${m.icon}</span>
     <span class="dm"><span>${esc(m.title)}${m.soon ? ' <span class="tag">bald</span>' : ""}</span>${m.hint ? `<small>${esc(m.hint)}</small>` : ""}</span></button>`;
   const n = db.mitglieder.length;
-  $("#drawer .drawer").innerHTML = `<div class="dh"><img src="icons/icon.svg" alt="">
+  return `<div class="dh"><img src="icons/icon.svg" alt="">
       <div><b>${esc(db.haushalt.name)}</b><small>${Sync.mode === "drive" ? `${n} ${n === 1 ? "Mitglied" : "Mitglieder"}${Store.me ? " · " + esc(firstName(Store.me.name || Store.me.email)) : ""}` : "nur auf diesem Gerät"}</small></div></div>
     <div class="dscroll">${groups.map((g) => `<div class="dg">${esc(g)}</div>${MODULES.filter((m) => m.group === g).map(it).join("")}`).join("")}
     <div class="dsep"></div>
-    <button class="di" data-act="members"><span class="e">👥</span><span class="dm"><span>Mitglieder &amp; Freigabe</span></span></button>
     ${it(Einstellungen)}</div>`;
 }
 function openDrawer() {
+  if (isDesktop()) return;
   const d = $("#drawer"); renderDrawer(); d.hidden = false;
   requestAnimationFrame(() => d.classList.add("open"));
   history.pushState({ drawer: 1 }, "");   // Zurück-Taste schließt das Menü
 }
 function hideDrawer() { const d = $("#drawer"); if (!d || d.hidden) return; d.classList.remove("open"); setTimeout(() => (d.hidden = true), 200); }
 function closeDrawer() { if (history.state?.drawer) history.back(); else hideDrawer(); }
-window.addEventListener("popstate", () => hideDrawer());
+window.addEventListener("popstate", () => {
+  const d = $("#drawer");
+  if (d && !d.hidden) return hideDrawer();
+  const m = cur(); if (m.back?.()) m.goBack();
+});
 
 function renderSync() {
   const el = $("#sync"); if (!el) return;
@@ -141,8 +218,8 @@ function ensureMember() {
 async function openHousehold(id) {
   try {
     toast("Lade Haushalt …");
-    const d = await Sync.open(id);
-    db = d; Sync.mode = "drive"; lsSet(LS.mode, "drive"); Sync.saveCache();
+    await Sync.open(id);
+    Sync.mode = "drive"; lsSet(LS.mode, "drive"); Sync.saveCache();
     startApp();
     if (ensureMember()) Store.commit(); else Sync.setStatus("saved");
     toast(`${db.haushalt.name} geöffnet`);
@@ -157,10 +234,10 @@ async function createHousehold() {
     let data = emptyDB(name || "Unser Haushalt");
     if (Sync.mode === "local" && db && db.buchungen.length) {
       if (await confirmBox("Daten übernehmen?", "Auf diesem Gerät gibt es schon ausprobierte Daten. Sollen sie in den neuen Haushalt übernommen werden?", "Übernehmen")) {
-        data = db; data.haushalt.name = name || data.haushalt.name;
+        data = Data.shared; data.haushalt.name = name || data.haushalt.name;
       }
     }
-    db = data; db.haushalt.owner = Store.me?.email || ""; Store.touch("haushalt"); ensureMember();
+    setShared(data); db.haushalt.owner = Store.me?.email || ""; Store.touch("haushalt"); ensureMember();
     toast("Lege Haushalt an …");
     await Sync.createFile(db);
     Sync.mode = "drive"; lsSet(LS.mode, "drive"); Sync.saveCache(); Sync.setStatus("saved");
@@ -225,39 +302,28 @@ async function showMembers() {
 }
 
 /* =================================================================== Darstellung, Sicherung */
-function editDesign() {
-  const draw = () => {
-    const f = farben(), mode = themeMode();
-    return `<div class="pick-group">Hell oder dunkel</div>
-      <div class="seg">${[["auto", "Automatisch"], ["light", "Hell"], ["dark", "Dunkel"]].map(([k, l]) => `<button data-mode="${k}" class="${mode === k ? "on" : ""}">${l}</button>`).join("")}</div>
-      <p class="sub">Automatisch folgt der Einstellung des Handys.</p>
-      <div class="pick-group">Farbe der App</div>
-      <div class="swatches">${Object.entries(THEMES).map(([k, t]) => `<button class="swatch ${f.app === k ? "on" : ""}" data-farbe="${k}"><i style="background:${t.acc}"></i>${esc(t.name)}</button>`).join("")}</div>
-      <p class="sub">Das Haushaltsbuch hat eigene Farben für Privat und Gewerbe (Haushaltsbuch → Mehr). Die Darstellung gilt nur für dich.</p>`;
-  };
-  const m = modal({ title: "Darstellung", body: `<div data-d>${draw()}</div>` });
-  m.addEventListener("click", (e) => {
-    const t = e.target.closest("button"); if (!t) return;
-    if (t.dataset.mode) lsSet(LS.theme, t.dataset.mode);
-    else if (t.dataset.farbe) setFarbe("app", t.dataset.farbe);
-    else return;
-    render(); $("[data-d]", m).innerHTML = draw();
-  });
-}
 async function restoreBackup() {
   const file = await pickFile(".json,application/json"); if (!file) return;
   let d;
   try { d = JSON.parse(await file.text()); } catch { return toast("Datei konnte nicht gelesen werden"); }
-  if (d?.app !== "haushalt") return toast(Array.isArray(d?.buchungen) ? "Das ist eine Sicherung des alten Haushaltsbuchs – bitte unter Haushaltsbuch → Mehr übernehmen." : "Das ist keine Haushalt-Sicherung");
+  if (d?.app !== "haushalt") return toast(Array.isArray(d?.buchungen) ? "Das ist eine Sicherung des alten Haushaltsbuchs – bitte unter Einstellungen → Finanzen → Altes Haushaltsbuch übernehmen." : "Das ist keine Haushalt-Sicherung");
   d = migrate(d);
   if (!await confirmBox("Sicherung einspielen?", `Alle Daten des Haushalts werden für <b>alle Mitglieder</b> durch die Sicherung vom ${new Date(d.updated).toLocaleString("de-DE")} ersetzt.`, "Einspielen", true)) return;
   const keepName = db.haushalt.name;
+  // versteckte Konten anderer Personen nie in die gemeinsame Datei schreiben – nur als Platzhalter
+  const foreign = (k) => k?.versteckt && k.inhaber !== Store.me?.email;
+  const fk = new Set(d.konten.filter(foreign).map((k) => k.id));
   COLLS.forEach((c) => {
-    db[c].slice().forEach((r) => Store.del(c, r.id));
-    d[c].forEach((r) => Store.put(c, Object.assign({}, r)));
+    db[c].slice().forEach((r) => { if (!(c === "konten" && foreign(r))) Store.del(c, r.id); });
+    d[c].forEach((r) => {
+      if (c === "konten" && foreign(r)) return Store.put(c, { id: r.id, buch: r.buch, inhaber: r.inhaber, versteckt: true });
+      if (c === "buchungen" && r.buch === "privat" && [r.konto, r.ziel].filter(Boolean).every((id) => fk.has(id))) return;
+      Store.put(c, Object.assign({}, r));
+    });
   });
-  db.settings = d.settings; Store.touch("settings");
-  db.haushalt = Object.assign(d.haushalt, { name: d.haushalt.name || keepName }); Store.touch("haushalt");
+  Data.shared.settings = d.settings;
+  Data.shared.haushalt = Object.assign(d.haushalt, { name: d.haushalt.name || keepName });
+  rebuild(); Store.touch("settings"); Store.touch("haushalt");
   ensureMember();
   Store.commit(); render(); toast("Sicherung eingespielt");
 }
@@ -276,6 +342,9 @@ Sync.onRemote = (silent) => { render(); if (!stack.length || !silent) toast("Neu
 document.addEventListener("click", async (e) => {
   if (e.target.closest(".modal-bg") && !e.target.closest("[data-act=edit]")) return;   // Dialoge regeln ihre Klicks selbst
   if (e.target.closest("[data-menu]")) return openDrawer();
+  if (e.target.closest("[data-back]")) { if (history.state?.sub) history.back(); else cur().goBack?.(); return; }
+  if (e.target.closest("[data-gear]")) return openSettings(cur().settingsPage, curId);
+  if (e.target.closest("#side")) { const nav = e.target.closest("[data-nav]"); if (nav) goModule(nav.dataset.nav); return; }
   const dr = e.target.closest("#drawer");
   if (dr) {
     const nav = e.target.closest("[data-nav]");
@@ -288,7 +357,7 @@ document.addEventListener("click", async (e) => {
   const a = e.target.closest("[data-act]"); if (!a) return;
   switch (a.dataset.act) {
     case "signin": return signIn();
-    case "local": Sync.mode = "local"; lsSet(LS.mode, "local"); db = db || emptyDB(); Sync.saveCache(); return startApp();
+    case "local": Sync.mode = "local"; lsSet(LS.mode, "local"); if (!db) setShared(emptyDB()); Sync.saveCache(); return startApp();
     case "hh-open": return openHousehold(a.dataset.id);
     case "hh-create": return createHousehold();
     case "hh-join": return joinHousehold();
@@ -299,7 +368,6 @@ document.addEventListener("click", async (e) => {
       db.haushalt.name = v; Store.touch("haushalt"); Store.commit(); return render();
     }
     case "members": return showMembers();
-    case "design": return editDesign();
     case "backup": return download(`Haushalt_Sicherung_${todayISO()}.json`, new Blob([JSON.stringify(db, null, 1)], { type: "application/json" }));
     case "restore": return restoreBackup();
     case "sync": case "sync-now":
@@ -315,6 +383,13 @@ document.addEventListener("click", async (e) => {
       Sync.clearCache(); lsDel(LS.mode); location.reload();
   }
 });
+// Esc schließt den obersten Dialog bzw. das Menü
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (stack.length) { e.preventDefault(); return closeModal(); }
+  if ($("#drawer") && !$("#drawer").hidden) return closeDrawer();
+});
+deskMQ?.addEventListener?.("change", () => { hideDrawer(); if (db && $(".shell")) render(); });
 document.addEventListener("input", (e) => { if ($(".shell") && db) cur().input?.(e); });
 window.addEventListener("online", () => { if (Sync.mode === "drive") Sync.dirty ? Sync.push() : Sync.refresh(); });
 window.addEventListener("offline", () => Sync.mode === "drive" && Sync.setStatus("offline"));
@@ -325,10 +400,9 @@ setInterval(() => { if (document.visibilityState === "visible" && Sync.mode === 
 
 (async function init() {
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
-  const cached = Sync.loadCache();
-  db = cached ? migrate(cached) : null;
+  Sync.loadCache();
   if (!Sync.mode || (Sync.mode === "drive" && (!Sync.fileId || !db))) return welcome();
-  if (!db) db = emptyDB();
+  if (!db) setShared(emptyDB());
   startApp();
   if (Sync.mode === "drive") {
     if (!navigator.onLine) return Sync.setStatus("offline");

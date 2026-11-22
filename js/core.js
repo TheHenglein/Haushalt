@@ -7,11 +7,11 @@ const CFG = Object.assign({ googleClientId: "", googleApiKey: "", driveFolder: "
 // Projektnummer = App-ID für den Google Picker; steckt vorne in der Client-ID („123456-abc.apps.googleusercontent.com“)
 CFG.appId = (CFG.googleClientId.match(/^(\d+)-/) || [])[1] || "";
 const APP_NAME = "Haushalt";
-const APP_VERSION = "1.0";
+const APP_VERSION = "1.4";
 
 // eigene Namen (hh_), damit sich die Apps auf TheHenglein.github.io nicht in die Quere kommen (Haushaltsbuch: hb_, Deko-App: mk_)
 const LS = {
-  data: "hh_data", meta: "hh_meta", mode: "hh_mode", token: "hh_token", theme: "hh_theme", farben: "hh_farben",
+  data: "hh_data", priv: "hh_priv", meta: "hh_meta", finScope: "hh_fin_scope", ownHint: "hh_own_hint", mode: "hh_mode", token: "hh_token", theme: "hh_theme", farben: "hh_farben",
   last: "hh_last", module: "hh_module", finTab: "hh_fin_tab", finBook: "hh_fin_book"
 };
 
@@ -47,6 +47,8 @@ const dayLabel = (iso) => {
   const d = new Date(iso + "T12:00:00Z"); return `${WD[d.getUTCDay()]}, ${d.getUTCDate()}. ${MONTHS[d.getUTCMonth()]}`;
 };
 const svg = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const deskMQ = window.matchMedia ? matchMedia("(min-width: 1024px)") : null;
+const isDesktop = () => !!deskMQ?.matches;   // Laptop/PC: Seitenleiste, Reiter oben, Dialoge mittig
 const firstName = (s) => String(s || "").trim().split(/[\s@]/)[0];
 
 let toastTimer;
@@ -115,12 +117,12 @@ const THEMES = {
   tanne: { name: "Tannengrün", acc: "#2E6B4A", light: { soft: "#E6EDE9", ink: "#2E6B4A" }, dark: { soft: "#233B32", ink: "#86A996" } },
   anthrazit: { name: "Anthrazit", acc: "#3A3F47", light: { soft: "#E7E8E9", ink: "#3A3F47" }, dark: { soft: "#282A31", ink: "#95979C" } },
 };
-const DEFAULT_FARBE = { app: "blau", privat: "dunkellila", gewerbe: "petrol" };
+const DEFAULT_FARBE = { app: "blau", privat: "dunkellila", gewerbe: "petrol", haushalt: "tanne" };
 const farben = () => Object.assign({}, DEFAULT_FARBE, lsGet(LS.farben, {}));
 const setFarbe = (bereich, key) => { const f = farben(); f[bereich] = key; lsSet(LS.farben, f); };
 const darkMQ = window.matchMedia ? matchMedia("(prefers-color-scheme: dark)") : null;
 const themeMode = () => lsGet(LS.theme, "auto");
-/* bereich: "app" | "privat" | "gewerbe" */
+/* bereich: "app" | "privat" | "gewerbe" | "haushalt" */
 function applyTheme(bereich = "app") {
   const mode = themeMode();
   const dark = mode === "dark" || (mode === "auto" && !!darkMQ?.matches);

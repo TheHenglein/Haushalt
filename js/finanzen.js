@@ -56,6 +56,7 @@ registerData(["konten", "kategorien", "buchungen"], (d, fill) => {
 /* ---------- Zustand (pro Gerät) ---------- */
 let book = lsGet(LS.finBook, "privat");
 let finTab = lsGet(LS.finTab, "start");
+if (!["start", "liste", "auswertung"].includes(finTab)) finTab = "start";   // früher gab es den Reiter „Mehr“
 const ui = { off: { liste: 0, auswertung: 0 }, q: "", filter: "alle" };
 const finSet = () => db.settings.fin;
 const gewerbeAktiv = () => finSet().gewerbeAktiv !== false;
@@ -70,7 +71,43 @@ const katMain = (k) => k ? (k.parent ? katById(k.parent) : k) : null;
 const katIcon = (k) => katMain(k)?.icon || "•";
 const hasChildren = (id) => db.kategorien.some((k) => k.parent === id && !k.hidden);
 const leafCats = (b, typ) => db.kategorien.filter((k) => k.buch === b && k.typ === typ && !k.hidden && !hasChildren(k.id) && (!k.parent || !katById(k.parent)?.hidden));
-const kontenOf = (b, withArchiv = false) => db.konten.filter((k) => k.buch === b && (withArchiv || !k.archiv));
+/* ---------- Wem gehört ein Konto? ----------
+ * inhaber: "" = gemeinsam, sonst E-Mail. versteckt: nur für den Inhaber sichtbar (liegt in dessen privater Datei).
+ * Für alle anderen ist ein verstecktes Konto nur ein Platzhalter ohne Namen und Stand. */
+const ME = () => Store.me?.email || "";
+const ownerOf = (k) => k?.inhaber || "";
+const isStub = (k) => !!k?.versteckt && ownerOf(k) !== ME();
+const kontoName = (k) => !k ? "?" : isStub(k) ? `Privates Konto (${Store.memberName(ownerOf(k))})` : k.name;
+const ownerLabel = (email) => !email ? "Gemeinsam" : email === ME() ? "Meine Konten" : Store.memberName(email);
+const kontenOf = (b, withArchiv = false) => db.konten.filter((k) => k.buch === b && !isStub(k) && (withArchiv || !k.archiv));
+/* Auswahl im Privat-Buch: alle · meine · gemeinsam · E-Mail einer Person */
+let scope = lsGet(LS.finScope, "alle");
+const scopeOptions = () => {
+  const ks = kontenOf("privat", true);
+  if (!ks.some((k) => ownerOf(k))) return [];   // noch niemandem etwas zugeordnet → kein Filter nötig
+  const others = [...new Set(ks.map(ownerOf).filter((e) => e && e !== ME()))];
+  return [["alle", "Alle"], ["meine", "Meine"], ["gemeinsam", "Gemeinsam"], ...others.map((e) => [e, Store.memberName(e)])];
+};
+const curScope = (b = curBook()) => b === "privat" && scopeOptions().some(([k]) => k === scope) ? scope : "alle";
+function inScope(k, b = curBook()) {
+  if (!k || k.buch !== b || isStub(k)) return false;
+  if (b !== "privat") return true;
+  const sc = curScope(b), o = ownerOf(k);
+  return sc === "alle" || (sc === "meine" ? o === ME() && !!o : sc === "gemeinsam" ? !o : o === sc);
+}
+function scopeChips() {
+  const opts = scopeOptions(); if (curBook() !== "privat" || !opts.length) return "";
+  const sc = curScope();
+  return `<div class="chips scope">${opts.map(([k, l]) => `<button class="chip ${sc === k ? "on" : ""}" data-scope="${esc(k)}">${esc(l)}</button>`).join("")}</div>`;
+}
+/* Gegenkonto außerhalb der Auswahl, z. B. „An gemeinsame Konten“, „Von Ben“ */
+function uebLabel(k, dir) {
+  const o = ownerOf(k);
+  if (isStub(k)) return (dir > 0 ? "Von " : "An ") + Store.memberName(o) + " (privat)";
+  if (!o) return dir > 0 ? "Von gemeinsamen Konten" : "An gemeinsame Konten";
+  if (o === ME()) return dir > 0 ? "Von meinen Konten" : "An meine Konten";
+  return (dir > 0 ? "Von " : "An ") + Store.memberName(o);
+}
 
 /* ---------- Abrechnungsmonat ----------
  * Beginnt am Tag `monatsStart`; benannt nach dem Monat, in dem er endet. */
@@ -93,18 +130,24 @@ const inPeriod = (iso, p) => iso >= p.from && iso <= p.to;
  * um: Umbuchung innerhalb des Buchs
  * entnahme / einlage: Geld zwischen den Büchern (dir = +1 rein, -1 raus aus Sicht des Buchs) */
 function relation(x, b) {
+  const inV = (id) => inScope(kontoById(id), b);
   if (x.art === "aus" || x.art === "ein") {
-    if (x.buch === b) return { kind: x.art, cent: x.cent, cross: kontoBook(x.konto) !== b };
-    if (kontoBook(x.konto) === b) {            // Gewerbe-Buchung über ein privates Konto
+    if (x.buch === b) {
+      if (b === "privat") return inV(x.konto) ? { kind: x.art, cent: x.cent, cross: false } : null;
+      return { kind: x.art, cent: x.cent, cross: kontoBook(x.konto) !== b };
+    }
+    if (inV(x.konto)) {            // Gewerbe-Buchung über ein privates Konto
       return x.art === "aus" ? { kind: "einlage", dir: -1, cent: x.cent } : { kind: "entnahme", dir: +1, cent: x.cent };
     }
     return null;
   }
   if (x.art === "um") {
-    const fb = kontoBook(x.konto), tb = kontoBook(x.ziel);
-    if (fb === b && tb === b) return { kind: "um", cent: x.cent };
-    if (fb === b) return { kind: b === "gewerbe" ? "entnahme" : "einlage", dir: -1, cent: x.cent };
-    if (tb === b) return { kind: b === "gewerbe" ? "einlage" : "entnahme", dir: +1, cent: x.cent };
+    const fi = inV(x.konto), ti = inV(x.ziel);
+    if (fi && ti) return { kind: "um", cent: x.cent };
+    if (!fi && !ti) return null;
+    const dir = fi ? -1 : +1, other = kontoById(fi ? x.ziel : x.konto);
+    if (other && other.buch !== b) return { kind: b === "gewerbe" ? (fi ? "entnahme" : "einlage") : (fi ? "einlage" : "entnahme"), dir, cent: x.cent };
+    return { kind: "ueb", dir, cent: x.cent, other };   // Umbuchung zu einem Konto außerhalb der Auswahl
   }
   return null;
 }
@@ -132,6 +175,11 @@ function summary(b, p) {
     }
     if (rel.kind === "entnahme") r.entnahme += rel.cent;
     if (rel.kind === "einlage") r.einlage += rel.cent;
+    if (rel.kind === "ueb") {
+      const typ = rel.dir > 0 ? "ein" : "aus", name = uebLabel(rel.other, rel.dir), key = typ + ":__ueb:" + name;
+      r[typ] += rel.cent;
+      (r.byKat[key] ||= { typ, main: { id: "__ueb:" + name, icon: "⇄", name }, cent: 0, subs: {} }).cent += rel.cent;
+    }
     // Privat: Geld aus dem Gewerbe ist Einnahme, Geld ins Gewerbe ist Ausgabe
     if (b === "privat" && (rel.kind === "entnahme" || rel.kind === "einlage")) {
       const typ = rel.kind === "entnahme" ? "ein" : "aus";
@@ -158,8 +206,7 @@ function tileCats(b, typ, count = 7) {
 const FIN_TABS = [
   ["start", "Start", '<path d="M3 11 12 4l9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>'],
   ["liste", "Buchungen", '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1.2"/><circle cx="4" cy="12" r="1.2"/><circle cx="4" cy="18" r="1.2"/>'],
-  ["auswertung", "Auswertung", '<path d="M21 12a9 9 0 1 1-9-9v9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/>'],
-  ["mehr", "Mehr", '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>']
+  ["auswertung", "Auswertung", '<path d="M21 12a9 9 0 1 1-9-9v9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/>']
 ];
 
 /* Eine Buchung als Listenzeile, aus Sicht des Buchs b */
@@ -169,17 +216,20 @@ function rowHTML(x, b) {
   let icon = katIcon(k), title = katLabel(k), sub = [], val = 0, cls = "";
   if (rel.kind === "aus") { val = -rel.cent; cls = "out"; }
   else if (rel.kind === "ein") { val = rel.cent; cls = "in"; }
-  if (rel.kind === "um") { icon = "⇄"; title = "Umbuchung"; sub.push(`${konto?.name} → ${ziel?.name}`); }
+  if (rel.kind === "um" || rel.kind === "ueb") {
+    icon = "⇄"; title = "Umbuchung"; sub.push(`${kontoName(konto)} → ${kontoName(ziel)}`);
+    if (rel.kind === "ueb") { val = rel.dir * rel.cent; cls = val < 0 ? "out" : "in"; }
+  }
   else if (rel.kind === "entnahme" || rel.kind === "einlage") {
     icon = "⇄"; title = rel.kind === "entnahme" ? "Entnahme aus Gewerbe" : "Einlage ins Gewerbe";
     if (b === "gewerbe") title = rel.kind === "entnahme" ? "Entnahme (an Privat)" : "Einlage (von Privat)";
     val = rel.dir * rel.cent; cls = val < 0 ? "out" : "in";
     if (x.art !== "um") sub.push((x.art === "aus" ? "Gewerbe-Ausgabe: " : "Gewerbe-Einnahme: ") + katLabel(k));
-    else sub.push(`${konto?.name} → ${ziel?.name}`);
+    else sub.push(`${kontoName(konto)} → ${kontoName(ziel)}`);
   }
   if (rel.kind === "aus" || rel.kind === "ein") {
     if (k?.parent) sub.push(katById(k.parent)?.name);
-    if (konto) sub.push(rel.cross ? `privat ${rel.kind === "aus" ? "bezahlt" : "erhalten"} (${konto.name})` : konto.name);
+    if (konto) sub.push(rel.cross ? `privat ${rel.kind === "aus" ? "bezahlt" : "erhalten"} (${kontoName(konto)})` : kontoName(konto));
   }
   if (x.notiz) sub.unshift(x.notiz);
   if (Store.multi() && x.by) sub.push(Store.memberName(x.by));
@@ -203,21 +253,31 @@ function grouped(list, b) {
   flush();
   return html;
 }
+function kontoRow(k) {
+  const s = balance(k.id);
+  return `<button class="item" data-act="konto" data-id="${k.id}"><span class="ic">${ART_ICON[k.art] || "💳"}</span>
+    <span class="m"><span class="t">${esc(k.name)}${k.versteckt ? ' <span class="tag">🔒 nur ich</span>' : ""}</span><span class="s">${ART_KONTO[k.art] || ""}${ownerOf(k) && ownerOf(k) !== ME() ? " · " + esc(Store.memberName(ownerOf(k))) : ""}</span></span><span class="v ${s < 0 ? "out" : ""}">${eur(s)}</span></button>`;
+}
 function kontenHTML(b) {
-  const ks = kontenOf(b);
-  if (!ks.length) return `<div class="hint">Noch kein ${BOOKS[b]}-Konto angelegt. ${b === "gewerbe" ? "Bis das Geschäftskonto da ist, wähle beim Erfassen „privat bezahlt“ bzw. „privat erhalten“. Konto anlegen unter Mehr → Konten." : ""}</div>`;
-  return `<div class="list">${ks.map((k) => { const s = balance(k.id); return `<button class="item" data-act="konto" data-id="${k.id}"><span class="ic">${ART_ICON[k.art] || "💳"}</span>
-    <span class="m"><span class="t">${esc(k.name)}</span><span class="s">${ART_KONTO[k.art] || ""}</span></span><span class="v ${s < 0 ? "out" : ""}">${eur(s)}</span></button>`; }).join("")}</div>`;
+  const ks = kontenOf(b).filter((k) => inScope(k, b));
+  if (b === "privat" && scopeOptions().length && curScope() === "alle" && ks.length) {
+    const groups = [ME(), "", ...new Set(ks.map(ownerOf).filter((e) => e && e !== ME()))];
+    return groups.map((o) => { const g = ks.filter((k) => ownerOf(k) === o); return g.length ? `<div class="pick-group">${esc(ownerLabel(o))}</div><div class="list">${g.map(kontoRow).join("")}</div>` : ""; }).join("");
+  }
+  if (!ks.length && b === "privat" && curScope() !== "alle") return `<div class="hint">In dieser Auswahl gibt es keine Konten.</div>`;
+  if (!ks.length) return `<div class="hint">Noch kein ${BOOKS[b]}-Konto angelegt. ${b === "gewerbe" ? "Bis das Geschäftskonto da ist, wähle beim Erfassen „privat bezahlt“ bzw. „privat erhalten“. Konto anlegen unter Einstellungen → Finanzen → Konten." : ""}</div>`;
+  return `<div class="list">${ks.map(kontoRow).join("")}</div>`;
 }
 
 /* ---------- Start ---------- */
 function viewStart() {
   const b = curBook(), p = period(b), s = summary(b, p);
-  const total = kontenOf(b).reduce((a, k) => a + balance(k.id), 0);
-  const recent = bookingsFor(b).slice(0, 6);
+  const total = kontenOf(b).filter((k) => inScope(k, b)).reduce((a, k) => a + balance(k.id), 0);
+  const recent = bookingsFor(b).slice(0, isDesktop() ? 12 : 6);
   let hero;
   if (b === "privat") {
-    hero = `<div class="card hero"><div class="l">Auf allen Konten</div><div class="big">${eur(total)}</div>
+    const sc = curScope(), lbl = { alle: "Auf allen Konten", meine: "Auf meinen Konten", gemeinsam: "Auf den gemeinsamen Konten" }[sc] || `Auf den Konten von ${Store.memberName(sc)}`;
+    hero = `<div class="card hero"><div class="l">${esc(lbl)}</div><div class="big">${eur(total)}</div>
       <div class="l" style="margin-bottom:6px">${esc(p.label)} · ${p.range}</div>
       <div class="row"><div><small>Einnahmen</small><b>${eur(s.ein)}</b></div><div><small>Ausgaben</small><b>${eur(s.aus)}</b></div><div><small>Saldo</small><b>${eurS(s.saldo)}</b></div></div></div>`;
   } else {
@@ -226,10 +286,13 @@ function viewStart() {
       <div class="row"><div><small>Einnahmen</small><b>${eur(s.ein)}</b></div><div><small>Ausgaben</small><b>${eur(s.aus)}</b></div>
       <div><small>Heute verkauft</small><b>${sales.length ? eur(sales.reduce((a, x) => a + x.cent, 0)) : "–"}</b></div></div></div>`;
   }
-  return `${hero}
-    <div class="h3"><span>Konten</span></div>${kontenHTML(b)}
-    <div class="h3"><span>Zuletzt</span>${recent.length ? `<button data-ftab="liste">Alle</button>` : ""}</div>
-    ${recent.length ? grouped(recent, b) : `<div class="empty"><b>Noch keine Buchungen</b>Tippe auf <b style="display:inline">+</b>, um die erste Ausgabe einzutragen.</div>`}`;
+  const own = b === "privat" && Sync.mode === "drive" && Store.multi() && !db.konten.some((k) => ownerOf(k) === ME()) && !lsGet(LS.ownHint);
+  return `${scopeChips()}<div class="cols"><div>${hero}
+    ${own ? `<div class="hint"><b>Eigene Konten anlegen?</b><br>Leg dein Girokonto, Bargeld oder PayPal als <b>deine</b> Konten an – auf Wunsch nur für dich sichtbar. Die bisherigen Konten sind gemeinsame.
+      <div class="btns" style="margin-top:8px"><button class="btn small primary" data-act="own-konto">Eigenes Konto anlegen</button><button class="btn small ghost" data-act="own-hint">Später</button></div></div>` : ""}
+    <div class="h3"><span>Konten</span></div>${kontenHTML(b)}</div>
+    <div><div class="h3 first"><span>Zuletzt</span>${recent.length ? `<button data-ftab="liste">Alle</button>` : ""}</div>
+    ${recent.length ? grouped(recent, b) : `<div class="empty"><b>Noch keine Buchungen</b>${isDesktop() ? "Mit „Neue Buchung“ oben trägst du die erste Ausgabe ein." : `Tippe auf <b style="display:inline">+</b>, um die erste Ausgabe einzutragen.`}</div>`}</div></div>`;
 }
 
 /* ---------- Buchungen ---------- */
@@ -247,15 +310,15 @@ function viewListe() {
     const r = relation(x, b);
     if (f === "aus" && r.kind !== "aus") return false;
     if (f === "ein" && r.kind !== "ein") return false;
-    if (f === "um" && !["um", "entnahme", "einlage"].includes(r.kind)) return false;
+    if (f === "um" && !["um", "ueb", "entnahme", "einlage"].includes(r.kind)) return false;
     if (q) {
       const k = katById(x.kat);
-      const hay = [x.notiz, k?.name, katMain(k)?.name, kontoById(x.konto)?.name, centIn(x.cent), x.by && Store.memberName(x.by)].join(" ").toLowerCase();
+      const hay = [x.notiz, k?.name, katMain(k)?.name, kontoName(kontoById(x.konto)), kontoName(kontoById(x.ziel)), centIn(x.cent), x.by && Store.memberName(x.by)].join(" ").toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
   });
-  return `${q ? "" : periodNav("liste")}
+  return `${scopeChips()}${q ? "" : periodNav("liste")}
     <div class="toolbar"><input type="search" placeholder="Suchen (Notiz, Kategorie, Betrag)" value="${esc(ui.q)}" data-q></div>
     <div class="chips">${[["alle", "Alle"], ["aus", "Ausgaben"], ["ein", "Einnahmen"], ["um", "Umbuchungen"]].map(([k, l]) => `<button class="chip ${f === k ? "on" : ""}" data-filter="${k}">${l}</button>`).join("")}</div>
     ${list.length ? grouped(list, b) : `<div class="empty"><b>Keine Buchungen</b>${q ? "Nichts gefunden." : "In diesem Monat ist noch nichts eingetragen."}</div>`}`;
@@ -281,40 +344,51 @@ function viewAuswertung() {
       ${typ === "aus" ? `<span class="sw" style="background:${PALETTE[i % PALETTE.length]}"></span>` : ""}<span class="ic">${x.main?.icon || "•"}</span>
       <span class="m"><span class="t">${esc(x.main?.name || "Ohne Kategorie")}</span><span class="bar"><i style="width:${total ? x.cent / total * 100 : 0}%"></i></span></span>
       <span class="v">${eur(x.cent)}<small>${total ? Math.round(x.cent / total * 100) : 0} %</small></span></button>`).join("")}</div>`;
-  return `${periodNav("auswertung")}
+  return `${scopeChips()}${periodNav("auswertung")}
     <div class="kpis"><div class="card"><div class="l">Einnahmen</div><div class="v in">${eur(s.ein)}</div></div>
       <div class="card"><div class="l">Ausgaben</div><div class="v out">${eur(s.aus)}</div></div>
       <div class="card"><div class="l">${b === "privat" ? "Saldo" : "Gewinn"}</div><div class="v">${eurS(s.saldo)}</div></div></div>
-    ${diff != null ? `<div class="hint">Ausgaben ${diff > 0 ? "<b class=out>" + Math.round(diff * 100) + " % mehr</b>" : diff < 0 ? "<b class=in>" + Math.round(-diff * 100) + " % weniger</b>" : "genauso viel"} als im Vormonat (${eur(prev.aus)}).</div>` : ""}
+    ${diff != null ? `<div class="hint">Ausgaben ${Math.abs(diff) < 0.005 ? "etwa genauso hoch" : diff > 0 ? "<b class=out>" + Math.round(diff * 100) + " % mehr</b>" : diff < 0 ? "<b class=in>" + Math.round(-diff * 100) + " % weniger</b>" : "genauso viel"}${Math.abs(diff) < 0.005 ? " wie" : " als"} im Vormonat (${eur(prev.aus)}).</div>` : ""}
     ${b === "gewerbe" && (s.entnahme || s.einlage) ? `<div class="card"><div class="row2"><div><div class="sub">Entnahmen (an Privat)</div><b>${eur(s.entnahme)}</b></div><div><div class="sub">Einlagen (von Privat)</div><b>${eur(s.einlage)}</b></div></div>
       <div class="sub" style="margin-top:6px">Nicht im Gewinn enthalten.</div></div>` : ""}
     <div class="h3"><span>Ausgaben nach Kategorie</span></div>
-    ${parts.length ? `<div class="card">${donut(parts, s.aus)}${fix ? `<div class="sub" style="text-align:center;margin-bottom:8px">davon Fixkosten ${eur(fix)} · variabel ${eur(s.aus - fix)}</div>` : ""}${legend(parts, "aus", s.aus)}</div>` : `<div class="empty">Keine Ausgaben in diesem Monat.</div>`}
+    ${parts.length ? `<div class="card"><div class="split"><div>${donut(parts, s.aus)}${fix ? `<div class="sub" style="text-align:center;margin-bottom:8px">davon Fixkosten ${eur(fix)} · variabel ${eur(s.aus - fix)}</div>` : ""}</div>${legend(parts, "aus", s.aus)}</div></div>` : `<div class="empty">Keine Ausgaben in diesem Monat.</div>`}
     <div class="h3"><span>Einnahmen nach Kategorie</span></div>
     ${ins.length ? `<div class="card">${legend(ins, "ein", s.ein)}</div>` : `<div class="empty">Keine Einnahmen in diesem Monat.</div>`}`;
 }
 function showKatDetail(mainId, typ) {
   const b = curBook(), p = period(b, ui.off.auswertung);
-  const main = katById(mainId), gew = mainId === "__gew";
+  const main = katById(mainId), gew = mainId === "__gew", ueb = mainId.startsWith("__ueb:") ? mainId.slice(6) : null;
   const list = bookingsFor(b, (x) => { const r = relation(x, b); if (!inPeriod(x.datum, p)) return false;
     if (gew) return r.kind === (typ === "ein" ? "entnahme" : "einlage");
+    if (ueb) return r.kind === "ueb" && uebLabel(r.other, r.dir) === ueb;
     const k = katById(x.kat); return r.kind === typ && (katMain(k)?.id || "-") === mainId; });
-  modal({ title: `${gew ? (typ === "ein" ? "Aus dem Gewerbe" : "Ins Gewerbe") : main?.name || "Ohne Kategorie"} · ${p.label}`, body: list.length ? grouped(list, b) : `<div class="empty">Keine Buchungen.</div>` });
+  modal({ title: `${gew ? (typ === "ein" ? "Aus dem Gewerbe" : "Ins Gewerbe") : ueb || main?.name || "Ohne Kategorie"} · ${p.label}`, body: list.length ? grouped(list, b) : `<div class="empty">Keine Buchungen.</div>` });
 }
 
-/* ---------- Mehr (Einstellungen des Haushaltsbuchs) ---------- */
-function viewMehr() {
-  const b = curBook(), f = farben();
-  const item = (act, icon, t, s) => `<button class="item" data-act="${act}"><span class="ic">${icon}</span><span class="m"><span class="t">${t}</span><span class="s">${s}</span></span><span class="sub">›</span></button>`;
-  return `<div class="h3"><span>${BOOKS[b]}</span></div><div class="list">
-      ${item("konten", "🏦", "Konten", `${kontenOf(b).length} Konten · Anfangsbestand, Kassensturz`)}
-      ${item("kategorien", "🗂️", "Kategorien", "umbenennen, ergänzen, ausblenden")}
-      ${item("monat", "📅", "Abrechnungsmonat", `beginnt am ${finSet()[b].monatsStart}.`)}</div>
-    <div class="h3"><span>Haushaltsbuch</span></div><div class="list">
-      ${item("gewerbe", "💼", "Gewerbe-Buch", gewerbeAktiv() ? "eingeschaltet – getrennt von Privat" : "ausgeschaltet")}
-      ${item("fin-design", "🎨", "Farben der Bücher", `Privat ${THEMES[f.privat]?.name}${gewerbeAktiv() ? ` · Gewerbe ${THEMES[f.gewerbe]?.name}` : ""}`)}
-      ${item("import-v1", "📥", "Altes Haushaltsbuch übernehmen", "Sicherungsdatei der bisherigen App einlesen")}</div>
-    <p class="sub" style="text-align:center;margin-top:20px">Gilt für den ganzen Haushalt – außer den Farben, die stellt jede Person für sich ein.</p>`;
+/* ---------- Einstellungen › Finanzen (Unterseite der zentralen Einstellungen) ---------- */
+function finSettingsView() {
+  const item = (act, b, icon, t, sub) => `<button class="item" data-fset="${act}" data-b="${b}"><span class="ic">${icon}</span><span class="m"><span class="t">${t}</span><span class="s">${sub}</span></span><span class="sub">›</span></button>`;
+  const book = (b) => `
+      ${item("konten", b, "🏦", "Konten", `${kontenOf(b).length} ${kontenOf(b).length === 1 ? "Konto" : "Konten"}${b === "privat" ? " · Inhaber, verstecken" : ""} · Anfangsbestand`)}
+      ${item("kategorien", b, "🗂️", "Kategorien", "umbenennen, ergänzen, ausblenden")}
+      ${item("monat", b, "📅", "Abrechnungsmonat", `beginnt am ${finSet()[b].monatsStart}.${finSet()[b].monatsStart === 1 ? " (Kalendermonat)" : ""}`)}`;
+  return `<div class="h3"><span>Privat</span></div><div class="list">${book("privat")}</div>
+    <div class="h3"><span>Gewerbe</span></div><div class="list">
+      ${item("gewerbe", "gewerbe", "💼", "Gewerbe-Buch", gewerbeAktiv() ? "eingeschaltet – getrennt von Privat" : "ausgeschaltet")}
+      ${gewerbeAktiv() ? book("gewerbe") : ""}</div>
+    <div class="h3"><span>Sonstiges</span></div><div class="list">
+      ${item("import-v1", "privat", "📥", "Altes Haushaltsbuch übernehmen", "Sicherungsdatei der bisherigen App einlesen")}</div>
+    <p class="sub" style="text-align:center;margin-top:20px">Gilt für den ganzen Haushalt. Die Farben der Bücher stellt jede Person für sich ein – unter Darstellung.</p>`;
+}
+function finSettingsAct(act, b) {
+  switch (act) {
+    case "konten": return showKonten(b);
+    case "kategorien": return showKategorien("aus", b);
+    case "monat": return editMonat(b);
+    case "gewerbe": return toggleGewerbe();
+    case "import-v1": return importV1();
+  }
 }
 
 /* =================================================================== Auswahl-Dialoge */
@@ -322,12 +396,18 @@ function viewMehr() {
 function pickKonto({ title, b, art, all }) {
   return new Promise((res) => {
     const groups = [];
-    if (all) { groups.push(["Privat", kontenOf("privat")]); if (gewerbeAktiv()) groups.push(["Gewerbe", kontenOf("gewerbe")]); }
+    const byOwner = (ks, prefix = "") => {
+      const os = [ME(), "", ...new Set(ks.map(ownerOf).filter((e) => e && e !== ME()))];
+      const multi = new Set(ks.map(ownerOf)).size > 1;
+      return multi ? os.map((o) => [prefix + ownerLabel(o), ks.filter((k) => ownerOf(k) === o)]) : [[prefix || BOOKS.privat, ks]];
+    };
+    if (all) { groups.push(...byOwner(kontenOf("privat"), gewerbeAktiv() ? "Privat · " : "")); if (gewerbeAktiv()) groups.push(["Gewerbe", kontenOf("gewerbe")]); }
+    else if (b === "privat") groups.push(...byOwner(kontenOf("privat")));
     else {
       groups.push([BOOKS[b], kontenOf(b)]);
-      if (b === "gewerbe") groups.push([art === "ein" ? "Privat erhalten auf" : "Privat bezahlt mit", kontenOf("privat")]);
+      groups.push(...byOwner(kontenOf("privat"), art === "ein" ? "Privat erhalten auf · " : "Privat bezahlt mit · "));
     }
-    const m = modal({ title, onClose: () => res(null), body: groups.filter((g) => g[1].length).map(([g, ks]) => `<div class="pick-group">${esc(g)}</div><div class="list">${ks.map((k) => `<button class="item" data-k="${k.id}"><span class="ic">${ART_ICON[k.art]}</span><span class="m"><span class="t">${esc(k.name)}</span></span><span class="v">${eur(balance(k.id))}</span></button>`).join("")}</div>`).join("") || `<div class="empty">Noch keine Konten.</div>` });
+    const m = modal({ title, onClose: () => res(null), body: groups.filter((g) => g[1].length).map(([g, ks]) => `<div class="pick-group">${esc(g)}</div><div class="list">${ks.map((k) => `<button class="item" data-k="${k.id}"><span class="ic">${ART_ICON[k.art]}</span><span class="m"><span class="t">${esc(k.name)}${k.versteckt ? " 🔒" : ""}</span></span><span class="v">${eur(balance(k.id))}</span></button>`).join("")}</div>`).join("") || `<div class="empty">Noch keine Konten.</div>` });
     m.addEventListener("click", (e) => { const b2 = e.target.closest("[data-k]"); if (b2) { m.onClose = null; closeModal(m); res(b2.dataset.k); } });
   });
 }
@@ -347,7 +427,8 @@ function pickKat(b, typ) {
 function defaultKonto(b, art) {
   const l = lastKonto(), last = l[b + "-" + art] || l[b];
   if (last && kontoById(last) && !kontoById(last).archiv) return last;
-  return (kontenOf(b)[0] || (b === "gewerbe" ? kontenOf("privat")[0] : null))?.id || null;
+  const ks = kontenOf(b).sort((x, y) => (ownerOf(y) === ME() && !!ME()) - (ownerOf(x) === ME() && !!ME()));
+  return (ks.find((k) => inScope(k, b)) || ks[0] || (b === "gewerbe" ? kontenOf("privat")[0] : null))?.id || null;
 }
 function openEntry(opts = {}) {
   const editing = opts.id ? db.buchungen.find((x) => x.id === opts.id) : null;
@@ -359,11 +440,12 @@ function openEntry(opts = {}) {
   const sales = () => db.buchungen.filter((x) => x.buch === "gewerbe" && x.art === "ein" && x.datum === todayISO());
   const m = modal({ title: editing ? "Buchung bearbeiten" : `Neue Buchung${gewerbeAktiv() ? " · " + BOOKS[st.b] : ""}`, full: true, cls: "entry", body: `<div data-body style="display:contents"></div>` });
   const cents = () => { const c = toCent(st.amt); return c && c > 0 ? c : 0; };
+  st.sel = !!(editing && st.amt);   // vorhandener Betrag ist markiert: erste Ziffer ersetzt ihn
   const ready = () => cents() > 0 && !!st.konto && (st.art === "um" ? !!st.ziel && st.ziel !== st.konto : !!st.kat);
   const draw = () => {
     const konto = kontoById(st.konto), ziel = kontoById(st.ziel);
     const cross = konto && konto.buch !== st.b;
-    const kontoLabel = konto ? (cross ? `privat ${st.art === "ein" ? "erhalten" : "bezahlt"}: ${konto.name}` : konto.name) : "Konto wählen";
+    const kontoLabel = konto ? (cross ? `privat ${st.art === "ein" ? "erhalten" : "bezahlt"}: ${kontoName(konto)}` : kontoName(konto)) : "Konto wählen";
     const tiles = st.art === "um" ? "" : (() => {
       const list = tileCats(st.b, st.art);
       if (st.kat && !list.some((k) => k.id === st.kat) && katById(st.kat)) list.unshift(katById(st.kat));
@@ -372,10 +454,11 @@ function openEntry(opts = {}) {
     })();
     $("[data-body]", m).innerHTML = `
       <div class="seg">${[["aus", "Ausgabe"], ["ein", "Einnahme"], ["um", "Umbuchung"]].map(([k, l]) => `<button data-art="${k}" class="${st.art === k ? "on" : ""}">${l}</button>`).join("")}</div>
-      <div class="amount" data-amount><div class="a ${cents() ? "" : "zero"}">${st.amt ? esc(st.amt) : "0"} €</div></div>
+      <div class="amount" data-amount><button type="button" class="a ${cents() ? "" : "zero"}" data-amtbox aria-label="Betrag">${st.sel ? `<span class="sel">${esc(st.amt)}</span>` : `${st.amt ? esc(st.amt) : ""}<span class="caret"></span>${st.amt ? "" : '<span class="ph">0</span>'}`} €</button></div>
+      <div class="kbdhint">${st.sel ? "Tippen ersetzt den Betrag · Klick darauf: weiterschreiben" : "Betrag eintippen · Enter speichert · Esc schließt"}</div>
       ${st.art === "um" ? `<div class="transfer">
-          <button class="pickbtn" data-pick="konto"><small>Von</small>${esc(konto?.name || "Konto wählen")} <span class="sub">${konto && gewerbeAktiv() ? BOOKS[konto.buch] : ""}</span></button>
-          <button class="pickbtn" data-pick="ziel"><small>Nach</small>${esc(ziel?.name || "Konto wählen")} <span class="sub">${ziel && gewerbeAktiv() ? BOOKS[ziel.buch] : ""}</span></button>
+          <button class="pickbtn" data-pick="konto"><small>Von</small>${esc(konto ? kontoName(konto) : "Konto wählen")} <span class="sub">${konto && gewerbeAktiv() ? BOOKS[konto.buch] : ""}</span></button>
+          <button class="pickbtn" data-pick="ziel"><small>Nach</small>${esc(ziel ? kontoName(ziel) : "Konto wählen")} <span class="sub">${ziel && gewerbeAktiv() ? BOOKS[ziel.buch] : ""}</span></button>
           ${konto && ziel && konto.buch !== ziel.buch ? `<div class="hint" style="margin:0">${konto.buch === "gewerbe" ? "Entnahme: Geld vom Gewerbe ins Private." : "Einlage: privates Geld ins Gewerbe."}</div>` : ""}</div>` : ""}
       <div class="meta">
         ${st.art !== "um" ? `<button class="chip" data-pick="konto">${ART_ICON[konto?.art] || "💳"} ${esc(kontoLabel)}</button>` : ""}
@@ -385,7 +468,7 @@ function openEntry(opts = {}) {
       ${tiles}
       ${st.b === "gewerbe" && st.art === "ein" && !editing ? `<div class="sales">Heute: ${sales().length} Verkäufe · ${eur(sales().reduce((a, x) => a + x.cent, 0))}</div>` : ""}
       <div class="keypad">${["1", "2", "3", "4", "5", "6", "7", "8", "9", ",", "0", "⌫"].map((k) => `<button data-key="${k}">${k}</button>`).join("")}
-        <button class="go ${ready() ? "" : "wait"}" data-save aria-label="Speichern">✓ ${st.art === "um" && !editing ? "Umbuchen" : "Speichern"}</button>
+        <button class="go ${ready() ? "" : "wait"}" data-save aria-label="Speichern">✓ ${st.art === "um" && !editing ? "Umbuchen" : "Speichern"}${isDesktop() ? ' <small class="kbd">Enter</small>' : ""}</button>
         ${editing ? `<button class="btn danger" data-del style="grid-column:span 3">Löschen</button>` : ""}</div>
       ${editing && Store.multi() && editing.by ? `<p class="sub" style="text-align:center;margin:0 0 10px">Eingetragen von ${esc(Store.memberName(editing.by))}${editing.von && editing.von !== editing.by ? ` · zuletzt geändert von ${esc(Store.memberName(editing.von))}` : ""}</p>` : ""}`;
   };
@@ -413,15 +496,17 @@ function openEntry(opts = {}) {
     const t = e.target.closest("button"); if (!t) return;
     if (t.dataset.key) {
       const k = t.dataset.key;
+      if (st.sel) { st.sel = false; st.amt = k === "⌫" ? "" : k === "," ? "0," : k; return draw(); }
       if (k === "⌫") st.amt = st.amt.slice(0, -1);
       else if (k === ",") { if (!st.amt.includes(",")) st.amt = (st.amt || "0") + ","; }
       else { const [, dec] = st.amt.split(","); if (dec != null && dec.length >= 2) return; if (st.amt.replace(",", "").length >= 8) return; st.amt = st.amt === "0" ? k : st.amt + k; }
       return draw();
     }
+    if (t.hasAttribute("data-amtbox")) { st.sel = !st.sel && !!st.amt; return draw(); }
     if (t.dataset.art) {
       st.art = t.dataset.art; st.kat = null;
       if (!editing) st.konto = defaultKonto(st.b, st.art);
-      if (st.art === "um") { if (kontoBook(st.konto) !== st.b) st.konto = kontenOf(st.b)[0]?.id || kontenOf("privat")[0]?.id; st.ziel = db.konten.find((k) => !k.archiv && k.id !== st.konto && (gewerbeAktiv() || k.buch === "privat"))?.id || null; }
+      if (st.art === "um") { if (kontoBook(st.konto) !== st.b) st.konto = kontenOf(st.b)[0]?.id || kontenOf("privat")[0]?.id; st.ziel = [...kontenOf("privat"), ...(gewerbeAktiv() ? kontenOf("gewerbe") : [])].find((k) => k.id !== st.konto)?.id || null; }
       return draw();
     }
     if (t.dataset.tile) {
@@ -448,6 +533,16 @@ function openEntry(opts = {}) {
     }
   });
   m.addEventListener("change", (e) => { if (e.target.matches("[data-date]")) { st.datum = e.target.value || todayISO(); draw(); } });
+  // Tastatur (Laptop/PC): Ziffern, Komma oder Punkt, Rücktaste, Enter = Speichern
+  const onKey = (e) => {
+    if (stack[stack.length - 1] !== m || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target.matches("input, textarea, select")) return;
+    const k = e.key === "." ? "," : e.key === "Backspace" ? "⌫" : e.key;
+    if (/^[0-9,⌫]$/.test(k)) { e.preventDefault(); $(`.keypad [data-key="${k}"]`, m)?.click(); }
+    else if (e.key === "Enter") { e.preventDefault(); save(); }
+  };
+  document.addEventListener("keydown", onKey);
+  m.onClose = () => document.removeEventListener("keydown", onKey);
 }
 
 /* =================================================================== Konten */
@@ -455,7 +550,7 @@ function showKonto(id) {
   const k = kontoById(id); const bal = balance(id);
   const list = db.buchungen.filter((x) => x.konto === id || x.ziel === id).sort((a, c) => c.datum.localeCompare(a.datum)).slice(0, 60);
   const m = modal({ title: k.name, body: `<div class="card hero"><div class="l">Kontostand</div><div class="big">${eur(bal)}</div>
-      <div class="l">Anfangsbestand ${eur(k.start)} am ${fDate(k.startDatum)}</div></div>
+      <div class="l">Anfangsbestand ${eur(k.start)} am ${fDate(k.startDatum)}${ownerOf(k) || Store.multi() ? " · " + esc(ownerOf(k) === ME() ? (k.versteckt ? "nur für mich sichtbar" : "gehört mir") : ownerOf(k) ? "gehört " + Store.memberName(ownerOf(k)) : "gemeinsam") : ""}</div></div>
       <div class="btns" style="margin-bottom:8px">${k.art === "bar" ? `<button class="btn" data-kasse>Kassensturz</button>` : ""}<button class="btn" data-edit>Bearbeiten</button></div>
       ${list.length ? grouped(list, k.buch) : `<div class="empty">Noch keine Buchungen auf diesem Konto.</div>`}` });
   m.addEventListener("click", (e) => {
@@ -477,22 +572,45 @@ async function kassensturz(id) {
   Store.put("buchungen", { id: uid(), created: new Date().toISOString(), by: Store.me?.email || "", art: typ, buch: k.buch, cent: Math.abs(diff), konto: id, kat: kat?.id, datum: todayISO(), notiz: "Kassensturz" });
   Store.commit(); render(); toast(`Differenz ${eurS(diff)} gebucht`);
 }
-function editKonto(id) {
+function editKonto(id, preset = {}) {
   const isNew = !id;
-  const k = isNew ? { id: "a" + uid(), name: "", buch: curBook(), art: "giro", start: 0, startDatum: todayISO(), archiv: false } : clone(kontoById(id));
-  const used = !isNew && db.buchungen.some((x) => x.konto === id || x.ziel === id);
-  const m = modal({ title: isNew ? `Neues Konto · ${BOOKS[k.buch]}` : k.name, body: `<form data-f>
-      <label class="f"><span>Name</span><input name="name" value="${esc(k.name)}" placeholder="z. B. Gemeinschaftskonto"></label>
+  const k = isNew ? Object.assign({ id: "a" + uid(), name: "", buch: curBook(), art: "giro", start: 0, startDatum: todayISO(), archiv: false,
+      inhaber: Store.multi() && curScope() !== "gemeinsam" ? ME() : "", versteckt: false }, preset) : clone(kontoById(id));
+  const used = !isNew ? db.buchungen.filter((x) => x.konto === id || x.ziel === id).length : 0;
+  const canHide = Sync.mode === "drive" && !!ME();
+  const members = db.mitglieder.length ? db.mitglieder : (ME() ? [{ id: ME(), name: Store.me.name }] : []);
+  const m = modal({ title: isNew ? `Neues Konto${gewerbeAktiv() ? " · " + BOOKS[k.buch] : ""}` : k.name, body: `<form data-f>
+      <label class="f"><span>Name</span><input name="name" value="${esc(k.name)}" placeholder="z. B. Girokonto Anna"></label>
       <label class="f"><span>Art</span><select name="art">${Object.entries(ART_KONTO).map(([a, l]) => `<option value="${a}" ${k.art === a ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      ${members.length > 1 || ownerOf(k) ? `<label class="f"><span>Gehört</span><select name="inhaber">
+        <option value="" ${!ownerOf(k) ? "selected" : ""}>Gemeinsam (allen im Haushalt)</option>
+        ${members.map((p) => `<option value="${esc(p.id)}" ${ownerOf(k) === p.id ? "selected" : ""}>${esc(p.id === ME() ? "Mir" : firstName(p.name || p.id))}</option>`).join("")}</select></label>` : ""}
+      ${k.buch === "privat" ? `<label class="f check" data-hiderow><input type="checkbox" name="versteckt" ${k.versteckt ? "checked" : ""} ${canHide ? "" : "disabled"}>
+        <span><b>Nur für mich sichtbar</b><small>${canHide ? "Konto und seine Buchungen liegen dann in einer eigenen Datei in deinem Google Drive – die anderen sehen sie nicht." : "Geht erst, wenn du mit Google angemeldet bist."}</small></span></label>` : ""}
       <div class="row2"><label class="f"><span>Anfangsbestand €</span><input name="start" inputmode="decimal" value="${centIn(k.start)}"></label>
       <label class="f"><span>am</span><input name="startDatum" type="date" value="${esc(k.startDatum)}"></label></div>
-      ${!isNew ? `<label class="f"><span><input type="checkbox" name="archiv" ${k.archiv ? "checked" : ""} style="width:auto;min-height:0"> Konto ausblenden (z. B. aufgelöst)</span></label>` : ""}</form>`,
+      ${!isNew ? `<label class="f check"><input type="checkbox" name="archiv" ${k.archiv ? "checked" : ""}><span><b>Konto ausblenden</b><small>z. B. wenn es aufgelöst wurde</small></span></label>` : ""}</form>`,
     foot: `${!isNew ? `<button class="btn danger" data-del>Löschen</button>` : ""}<button class="btn primary" data-save>Speichern</button>` });
-  $("[data-save]", m).onclick = () => {
-    const f = readForm($("[data-f]", m));
+  const form = $("[data-f]", m);
+  const sync = () => {   // „nur für mich“ geht nur bei eigenen Konten
+    const row = $("[data-hiderow]", m); if (!row) return;
+    const own = (form.inhaber ? form.inhaber.value : ownerOf(k)) === ME() && !!ME();
+    row.style.display = own ? "" : "none"; if (!own) form.versteckt.checked = false;
+  };
+  form.addEventListener("change", sync); sync();
+  $("[data-save]", m).onclick = async () => {
+    const f = readForm(form);
     if (!f.name) return toast("Bitte einen Namen eingeben");
-    Object.assign(k, { name: f.name, art: f.art, start: toCent(f.start) || 0, startDatum: f.startDatum || todayISO(), archiv: !!f.archiv });
-    Store.put("konten", k); Store.commit(); closeModal(m); render(); toast("Konto gespeichert");
+    const inh = form.inhaber ? f.inhaber : ownerOf(k), hide = !!f.versteckt && inh === ME() && !!ME() && k.buch === "privat";
+    if (hide !== !!k.versteckt && used) {
+      const ok = await confirmBox(hide ? "Konto verstecken?" : "Konto wieder zeigen?",
+        hide ? `„${esc(f.name)}“ und seine Buchungen werden in deine private Datei verschoben. Die anderen sehen das Konto danach nicht mehr. Umbuchungen zwischen diesem und einem sichtbaren Konto bleiben für alle sichtbar – als „Privates Konto (${esc(Store.memberName(ME()))})“, ohne Namen und Kontostand.<br><br><span class="sub">Hinweis: Google Drive hebt frühere Stände der gemeinsamen Datei bis zu 30 Tage im Versionsverlauf auf.</span>`
+             : `„${esc(f.name)}“ und seine ${used} Buchungen werden für alle im Haushalt sichtbar.`, hide ? "Verstecken" : "Zeigen");
+      if (!ok) return;
+    }
+    Object.assign(k, { name: f.name, art: f.art, start: toCent(f.start) || 0, startDatum: f.startDatum || todayISO(), archiv: !!f.archiv, inhaber: inh, versteckt: hide });
+    Store.put("konten", k); Store.reroute(k.id);
+    Store.commit(); closeModal(m); render(); toast(hide ? "Konto gespeichert – nur für dich sichtbar" : "Konto gespeichert");
   };
   if (!isNew) $("[data-del]", m).onclick = async () => {
     if (used) return toast("Auf diesem Konto gibt es Buchungen – stattdessen ausblenden.");
@@ -500,19 +618,26 @@ function editKonto(id) {
     Store.del("konten", k.id); Store.commit(); closeModal(m); render();
   };
 }
-function showKonten() {
-  const b = curBook();
-  const m = modal({ title: `Konten · ${BOOKS[b]}`, body: `${kontenOf(b, true).length ? `<div class="list">${kontenOf(b, true).map((k) => `<button class="item" data-k="${k.id}"><span class="ic">${ART_ICON[k.art]}</span><span class="m"><span class="t">${esc(k.name)}${k.archiv ? ' <span class="tag">ausgeblendet</span>' : ""}</span><span class="s">Anfangsbestand ${eur(k.start)} am ${fDate(k.startDatum)}</span></span><span class="v">${eur(balance(k.id))}</span></button>`).join("")}</div>` : `<div class="empty">Noch keine Konten.</div>`}`,
+function showKonten(b = curBook()) {
+  const ks = kontenOf(b, true);
+  const os = [ME(), "", ...new Set(ks.map(ownerOf).filter((e) => e && e !== ME()))];
+  const grouped = new Set(ks.map(ownerOf)).size > 1;
+  const row = (k) => `<button class="item" data-k="${k.id}"><span class="ic">${ART_ICON[k.art]}</span><span class="m"><span class="t">${esc(k.name)}${k.versteckt ? ' <span class="tag">🔒 nur ich</span>' : ""}${k.archiv ? ' <span class="tag">ausgeblendet</span>' : ""}</span><span class="s">Anfangsbestand ${eur(k.start)} am ${fDate(k.startDatum)}</span></span><span class="v">${eur(balance(k.id))}</span></button>`;
+  const body = !ks.length ? `<div class="empty">Noch keine Konten.</div>`
+    : grouped ? os.map((o) => { const g = ks.filter((k) => ownerOf(k) === o); return g.length ? `<div class="pick-group">${esc(ownerLabel(o))}</div><div class="list">${g.map(row).join("")}</div>` : ""; }).join("")
+    : `<div class="list">${ks.map(row).join("")}</div>`;
+  const hidden = db.konten.filter((k) => isStub(k) && k.buch === b).length;
+  const m = modal({ title: `Konten · ${BOOKS[b]}`, body: body + (hidden ? `<p class="sub">Dazu ${hidden} private${hidden === 1 ? "s Konto" : " Konten"} anderer Mitglieder, die nur sie sehen.</p>` : "") +
+      (b === "privat" && Store.multi() ? `<p class="sub">Jedes Konto ist gemeinsam oder gehört einer Person. Eigene Konten kannst du nur für dich sichtbar machen.</p>` : ""),
     foot: `<button class="btn primary" data-new>+ Konto anlegen</button>` });
   m.addEventListener("click", (e) => {
     const b2 = e.target.closest("[data-k]"); if (b2) { closeModal(m); editKonto(b2.dataset.k); }
-    if (e.target.closest("[data-new]")) { closeModal(m); editKonto(null); }
+    if (e.target.closest("[data-new]")) { closeModal(m); editKonto(null, { buch: b }); }
   });
 }
 
 /* =================================================================== Kategorien */
-function showKategorien(typ = "aus") {
-  const b = curBook();
+function showKategorien(typ = "aus", b = curBook()) {
   const mains = db.kategorien.filter((k) => k.buch === b && k.typ === typ && !k.parent);
   const m = modal({ title: `Kategorien · ${BOOKS[b]}`, body: `<div class="seg" style="grid-template-columns:1fr 1fr;margin-bottom:12px"><button data-typ="aus" class="${typ === "aus" ? "on" : ""}">Ausgaben</button><button data-typ="ein" class="${typ === "ein" ? "on" : ""}">Einnahmen</button></div>
     ${mains.map((mk) => `<div class="pick-group">${mk.icon} ${esc(mk.name)}${mk.hidden ? ' <span class="tag">aus</span>' : ""}</div><div class="list">
@@ -522,15 +647,15 @@ function showKategorien(typ = "aus") {
     foot: `<button class="btn primary" data-newmain>+ Hauptkategorie</button>` });
   m.addEventListener("click", (e) => {
     const t = e.target.closest("button"); if (!t) return;
-    if (t.dataset.typ) { closeModal(m); showKategorien(t.dataset.typ); }
-    if (t.dataset.k) { closeModal(m); editKat(t.dataset.k, null, typ); }
-    if (t.dataset.newsub) { closeModal(m); editKat(null, t.dataset.newsub, typ); }
-    if (t.hasAttribute("data-newmain")) { closeModal(m); editKat(null, null, typ); }
+    if (t.dataset.typ) { closeModal(m); showKategorien(t.dataset.typ, b); }
+    if (t.dataset.k) { closeModal(m); editKat(t.dataset.k, null, typ, b); }
+    if (t.dataset.newsub) { closeModal(m); editKat(null, t.dataset.newsub, typ, b); }
+    if (t.hasAttribute("data-newmain")) { closeModal(m); editKat(null, null, typ, b); }
   });
 }
-function editKat(id, parent, typ) {
+function editKat(id, parent, typ, b = curBook()) {
   const isNew = !id;
-  const k = isNew ? { id: "k" + uid(), buch: curBook(), typ, name: "", icon: parent ? katById(parent).icon : "📦", fix: parent ? katById(parent).fix : false, parent, hidden: false } : clone(katById(id));
+  const k = isNew ? { id: "k" + uid(), buch: b, typ, name: "", icon: parent ? katById(parent).icon : "📦", fix: parent ? katById(parent).fix : false, parent, hidden: false } : clone(katById(id));
   const used = db.buchungen.filter((x) => x.kat === k.id).length;
   const m = modal({ title: isNew ? (parent ? "Neue Unterkategorie" : "Neue Hauptkategorie") : k.name, body: `<form data-f>
       <div class="row2" style="grid-template-columns:${k.parent ? "1fr" : "1fr 90px"}"><label class="f"><span>Name</span><input name="name" value="${esc(k.name)}"></label>
@@ -539,7 +664,7 @@ function editKat(id, parent, typ) {
       ${!isNew ? `<label class="f"><span><input type="checkbox" name="hidden" ${k.hidden ? "checked" : ""} style="width:auto;min-height:0"> ausblenden (erscheint nicht mehr zur Auswahl)</span></label>` : ""}
       ${used ? `<p class="sub">${used} Buchungen verwenden diese Kategorie.</p>` : ""}</form>`,
     foot: `${!isNew && !used && !hasChildren(k.id) ? `<button class="btn danger" data-del>Löschen</button>` : ""}<button class="btn primary" data-save>Speichern</button>`,
-    onClose: () => showKategorien(typ) });
+    onClose: () => showKategorien(typ, b) });
   $("[data-save]", m).onclick = () => {
     const f = readForm($("[data-f]", m)); if (!f.name) return toast("Bitte einen Namen eingeben");
     Object.assign(k, { name: f.name, fix: f.fix === "1", hidden: !!f.hidden }); if (f.icon) k.icon = f.icon;
@@ -548,13 +673,12 @@ function editKat(id, parent, typ) {
     Store.commit(); closeModal(m); render();
   };
   const del = $("[data-del]", m);
-  if (del) del.onclick = async () => { m.onClose = null; closeModal(m); if (await confirmBox("Kategorie löschen?", `„${esc(k.name)}“ wird gelöscht.`, "Löschen", true)) { Store.del("kategorien", k.id); Store.commit(); render(); } showKategorien(typ); };
+  if (del) del.onclick = async () => { m.onClose = null; closeModal(m); if (await confirmBox("Kategorie löschen?", `„${esc(k.name)}“ wird gelöscht.`, "Löschen", true)) { Store.del("kategorien", k.id); Store.commit(); render(); } showKategorien(typ, b); };
 }
 function monatOptions(sel) {
   return Array.from({ length: 28 }, (_, i) => `<option value="${i + 1}" ${sel === i + 1 ? "selected" : ""}>${i + 1}.${i === 0 ? " (Kalendermonat)" : ""}</option>`).join("");
 }
-function editMonat() {
-  const b = curBook();
+function editMonat(b = curBook()) {
   const m = modal({ title: `Abrechnungsmonat · ${BOOKS[b]}`, body: `<p style="margin-top:0">Der Monat beginnt am:</p>
       <select data-s>${monatOptions(finSet()[b].monatsStart)}</select>
       <p class="sub">Beispiel 27.: Der Monat „Dezember“ läuft vom 27. November bis 26. Dezember – praktisch, wenn das Gehalt am 27. kommt.</p>`,
@@ -571,23 +695,6 @@ async function toggleGewerbe() {
   if (!ok) return;
   finSet().gewerbeAktiv = !on; Store.touch("settings"); Store.commit(); render();
 }
-function editBookColors() {
-  const draw = () => {
-    const f = farben();
-    const sw = (b) => `<div class="swatches">${Object.entries(THEMES).map(([k, t]) => `<button class="swatch ${f[b] === k ? "on" : ""}" data-farbe="${k}" data-b="${b}"><i style="background:${t.acc}"></i>${esc(t.name)}</button>`).join("")}</div>`;
-    return `<div class="pick-group">Farbe Privat</div>${sw("privat")}
-      ${gewerbeAktiv() ? `<div class="pick-group">Farbe Gewerbe</div>${sw("gewerbe")}
-      ${f.privat === f.gewerbe ? `<div class="hint" style="margin-top:12px">Tipp: Unterschiedliche Farben zeigen auf einen Blick, in welchem Buch du gerade bist.</div>` : ""}` : ""}
-      <p class="sub">Hell/dunkel und die Farbe der übrigen App: Menü → Einstellungen.</p>`;
-  };
-  const m = modal({ title: "Farben der Bücher", body: `<div data-d>${draw()}</div>` });
-  m.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-farbe]"); if (!t) return;
-    setFarbe(t.dataset.b, t.dataset.farbe); if (t.dataset.b !== book) { book = t.dataset.b; lsSet(LS.finBook, book); }
-    render(); $("[data-d]", m).innerHTML = draw();
-  });
-}
-
 /* ---------- Altes Haushaltsbuch (Schema 1) übernehmen ---------- */
 async function importV1() {
   const file = await pickFile(".json,application/json"); if (!file) return;
@@ -598,7 +705,7 @@ async function importV1() {
   const n = db.buchungen.length;
   if (!await confirmBox("Haushaltsbuch übernehmen?", `${old.buchungen.length} Buchungen, ${old.konten.length} Konten und die Kategorien aus der Sicherung vom ${new Date(old.updated).toLocaleString("de-DE")} werden übernommen.${n ? ` <b>Die ${n} Buchungen, Konten und Kategorien hier werden dabei ersetzt.</b>` : ""} Das gilt für den ganzen Haushalt.`, "Übernehmen", !!n)) return;
   ["buchungen", "konten", "kategorien"].forEach((c) => db[c].slice().forEach((r) => Store.del(c, r.id)));
-  old.konten.forEach((k) => Store.put("konten", Object.assign({ archiv: false }, k)));
+  old.konten.forEach((k) => Store.put("konten", Object.assign({ archiv: false, inhaber: Store.multi() ? ME() : "" }, k, { versteckt: false })));
   (old.kategorien || defaultCategories()).forEach((k) => Store.put("kategorien", Object.assign({}, k)));
   old.buchungen.forEach((x) => Store.put("buchungen", Object.assign({ by: Store.me?.email || "" }, x)));
   const s = old.settings || {};
@@ -606,8 +713,8 @@ async function importV1() {
   if (s.gewerbe?.monatsStart) finSet().gewerbe.monatsStart = s.gewerbe.monatsStart;
   finSet().onboarded = true;
   Store.touch("settings");
-  if (s.farben?.privat) setFarbe("privat", s.farben.privat);
-  if (s.farben?.gewerbe) setFarbe("gewerbe", s.farben.gewerbe);
+  if (s.farben?.privat && THEMES[s.farben.privat]) setFarbe("privat", s.farben.privat);
+  if (s.farben?.gewerbe && THEMES[s.farben.gewerbe]) setFarbe("gewerbe", s.farben.gewerbe);
   Store.commit(); render(); toast(`${old.buchungen.length} Buchungen übernommen`);
 }
 
@@ -618,7 +725,7 @@ function finOnboarding() {
   const m = modal({ title: "Haushaltsbuch einrichten", body: `<p style="margin-top:0">Wie viel ist gerade auf den Konten? Dann stimmen die Kontostände von Anfang an.</p>
       <form data-f>${ks.map((k) => `<label class="f"><span>${ART_ICON[k.art]} ${esc(k.name)}</span><input name="${k.id}" inputmode="decimal" placeholder="0,00"></label>`).join("")}
       <label class="f"><span>Der Monat beginnt am</span><select name="ms">${monatOptions(finSet().privat.monatsStart)}</select></label></form>
-      <p class="sub">Tipp: Kommt das Gehalt z. B. am 27., wähle den 27. Alles später änderbar unter Mehr. Hast du eine Sicherung der bisherigen Haushaltsbuch-App? Dann schließe dieses Fenster und wähle Mehr → Altes Haushaltsbuch übernehmen.</p>`,
+      <p class="sub">Tipp: Kommt das Gehalt z. B. am 27., wähle den 27. Alles später änderbar unter Einstellungen → Finanzen. Hast du eine Sicherung der bisherigen Haushaltsbuch-App? Dann schließe dieses Fenster und wähle dort „Altes Haushaltsbuch übernehmen“.</p>`,
     foot: `<button class="btn primary" data-ok>Los geht’s</button>`,
     onClose: () => { finSet().onboarded = true; Store.touch("settings"); Store.commit(); render(); } });
   $("[data-ok]", m).onclick = () => {
@@ -638,10 +745,11 @@ const Finanzen = {
     if (!gewerbeAktiv()) return "";
     return `<div class="switch">${Object.entries(BOOKS).map(([k, l]) => `<button data-book="${k}" class="${curBook() === k ? "on" : ""}">${l}</button>`).join("")}</div>`;
   },
-  view() { return ({ start: viewStart, liste: viewListe, auswertung: viewAuswertung, mehr: viewMehr }[finTab] || viewStart)(); },
+  settingsPage: "finanzen",   // Zahnrad oben → Einstellungen › Finanzen
+  view() { return ({ start: viewStart, liste: viewListe, auswertung: viewAuswertung }[finTab] || viewStart)(); },
   bottom() {
     return `<nav class="tabs">${FIN_TABS.map(([k, l, p]) => `<button data-ftab="${k}" class="${finTab === k ? "on" : ""}">${svg(p)}<span>${l}</span></button>`).join("")}</nav>
-      <button class="fab" data-act="neu" aria-label="Buchung erfassen">+</button>`;
+      <button class="fab" data-act="neu" aria-label="Buchung erfassen">+<span class="fab-l">Neue Buchung</span></button>`;
   },
   onShow() { finOnboarding(); },
   shortcut(neu) { openEntry({ art: neu === "ein" ? "ein" : "aus" }); },
@@ -650,18 +758,15 @@ const Finanzen = {
     if (bk && bk.closest(".switch")) { book = bk.dataset.book; lsSet(LS.finBook, book); ui.off = { liste: 0, auswertung: 0 }; render(); return true; }
     const tb = e.target.closest("[data-ftab]"); if (tb) { finTab = tb.dataset.ftab; lsSet(LS.finTab, finTab); render(); window.scrollTo(0, 0); return true; }
     const fl = e.target.closest("[data-filter]"); if (fl) { ui.filter = fl.dataset.filter; render(); return true; }
+    const sc = e.target.closest("[data-scope]"); if (sc) { scope = sc.dataset.scope; lsSet(LS.finScope, scope); render(); return true; }
     const a = e.target.closest("[data-act]"); if (!a) return false;
     const id = a.dataset.id;
     switch (a.dataset.act) {
       case "neu": openEntry({}); return true;
+      case "own-konto": editKonto(null, { inhaber: ME(), buch: "privat" }); return true;
+      case "own-hint": lsSet(LS.ownHint, true); render(); return true;
       case "edit": closeAll(); openEntry({ id }); return true;
       case "konto": showKonto(id); return true;
-      case "konten": showKonten(); return true;
-      case "kategorien": showKategorien("aus"); return true;
-      case "monat": editMonat(); return true;
-      case "gewerbe": toggleGewerbe(); return true;
-      case "fin-design": editBookColors(); return true;
-      case "import-v1": importV1(); return true;
       case "katdetail": showKatDetail(id, a.dataset.typ); return true;
       case "prev": ui.off[a.dataset.k]--; render(); return true;
       case "next": ui.off[a.dataset.k] = Math.min(0, ui.off[a.dataset.k] + 1); render(); return true;
