@@ -3,9 +3,7 @@
 //  Beim späteren Aktualisieren der App config.js NICHT überschreiben.
 // ------------------------------------------------------------
 window.APP_CONFIG = {
-  // OAuth-Client-ID (dieselbe wie beim Haushaltsbuch, endet auf .apps.googleusercontent.com)
-  googleClientId: "",
-
+  googleClientId: "531926226349-ipb6uqa2ai054p99ka8rbdjguipet030.apps.googleusercontent.com",
   // API-Schlüssel für die Google-Dateiauswahl („Einem Haushalt beitreten“)
   googleApiKey: "",
 
