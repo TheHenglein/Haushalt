@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Haushalt</title>
+  <meta name="description" content="Alles für den Haushalt an einem Ort – Finanzen, Haushaltsplan, Rezepte, Einkaufsliste, To-Dos">
+  <meta name="theme-color" content="#1F5FA8">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+  <script>/* dunklen Modus schon vor dem Laden setzen – verhindert kurzes helles Aufblitzen */
+    try { var m = JSON.parse(localStorage.getItem("hh_theme") || '"auto"');
+      if (m === "dark" || (m === "auto" && matchMedia("(prefers-color-scheme: dark)").matches)) document.documentElement.dataset.theme = "dark"; } catch (e) {}</script>
+</head>
+<body>
+  <div id="app"><div class="boot">Lade …</div></div>
+  <div id="modals"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="config.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/finanzen.js"></script>
+  <script src="js/haushalt.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
