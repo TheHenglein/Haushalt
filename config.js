@@ -5,9 +5,9 @@
 window.APP_CONFIG = {
   googleClientId: "531926226349-ipb6uqa2ai054p99ka8rbdjguipet030.apps.googleusercontent.com",
   // API-Schlüssel für die Google-Dateiauswahl („Einem Haushalt beitreten“)
-  googleApiKey: "",
+  googleApiKey: "AIzaSyASP5Ck68ixNq-LsaULEKzytLnxerJgjUM",
 
   // Ordner und Datendatei in Google Drive
   driveFolder: "Haushalts-App",
-  driveFile: "haushalt.json"
+  driveFile: "haushalts-app.json"
 };
