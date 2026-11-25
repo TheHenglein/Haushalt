@@ -106,13 +106,15 @@ function slotDialog(d, s) {
             ${v.by === ich() ? `<button class="x small" data-sdel="${v.id}" aria-label="Vorschlag löschen">×</button>` : ""}</div>`; }).join("")}</div>
         ${multi && !p ? `<p class="sub">${gleichstand(d, s) ? "Gleichstand – wählt einen Vorschlag mit „Festlegen“ oder ändert eure Stimme." : `${st.length} von ${mitgliederIds().length} haben abgestimmt. Haben alle abgestimmt, steht der Vorschlag mit den meisten Stimmen fest.`}</p>` : ""}` : ""}
       <div class="pick-group">${p ? "Anderes Gericht" : multi ? "Gericht vorschlagen" : "Gericht eintragen"}</div>
-      <div class="sugwrap"><input data-sin placeholder="Gericht eingeben oder Rezept suchen" maxlength="80"></div>
+      <div class="combo"><div class="sugwrap"><input data-sin placeholder="Gericht eingeben oder Rezept suchen" maxlength="80"></div>
+        <button type="button" class="btn combo-btn" data-sliste aria-label="Alle Rezepte anzeigen">📖 Rezepte</button></div>
       <label class="f check" data-stubrow style="margin-top:8px"><input type="checkbox" data-sstubchk><span><b>Als Rezept speichern</b><small>legt bei den Rezepten ein Rezept mit diesem Titel an – den Rest füllst du später aus</small></span></label>
       <div class="btns" style="margin-top:10px">${multi ? `<button class="btn" data-sadd="v">Vorschlagen</button>` : ""}<button class="btn primary" data-sadd="f">Fest eintragen</button></div>`;
     const inp = $("[data-sin]", m), row = $("[data-stubrow]", m);
     const sync = () => { const r = gewaehlt || rezeptByTitel(inp.value); row.style.display = inp.value.trim() && !r ? "" : "none"; };
     attachSuggest(inp, (q) => db.rezepte.filter((r) => normName(r.titel).includes(normName(q))).sort((a, b) => a.titel.localeCompare(b.titel, "de"))
-      .map((r) => ({ label: r.titel, sub: (r.tags || []).join(", ") || "Rezept", value: r })), (it) => { inp.value = it.value.titel; gewaehlt = it.value.id; sync(); });
+      .map((r) => ({ label: r.titel, sub: (r.tags || []).join(", ") || "Rezept", value: r })), (it) => { inp.value = it.value.titel; gewaehlt = it.value.id; sync(); }, 50);
+    $("[data-sliste]", m).onclick = () => rezeptWaehlen().then((r) => { if (!r) return; inp.value = r.titel; gewaehlt = r.id; sync(); });
     inp.addEventListener("input", () => { gewaehlt = null; sync(); });
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.defaultPrevented) { e.preventDefault(); add(multi ? "v" : "f"); } });
     sync();

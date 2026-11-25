@@ -7,7 +7,7 @@ const CFG = Object.assign({ googleClientId: "", googleApiKey: "", driveFolder: "
 // Projektnummer = App-ID für den Google Picker; steckt vorne in der Client-ID („123456-abc.apps.googleusercontent.com“)
 CFG.appId = (CFG.googleClientId.match(/^(\d+)-/) || [])[1] || "";
 const APP_NAME = "Haushalt";
-const APP_VERSION = "1.5";
+const APP_VERSION = "1.8";
 
 // eigene Namen (hh_), damit sich die Apps auf TheHenglein.github.io nicht in die Quere kommen (Haushaltsbuch: hb_, Deko-App: mk_)
 const LS = {

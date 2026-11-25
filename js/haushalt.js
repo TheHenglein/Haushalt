@@ -31,20 +31,28 @@ const minLabel = (min) => !min ? "" : min < 60 ? `${min} min` : `${Math.floor(mi
 
 /* Eingabefeld mit Vorschlägen (wie die Autovervollständigung in Excel).
  * getItems(q) → [{ label, sub, value }]; onPick(item). Pfeiltasten + Enter, Maus und Finger. */
-function attachSuggest(input, getItems, onPick) {
+function attachSuggest(input, getItems, onPick, max = 6) {
   const box = document.createElement("div"); box.className = "sugg"; box.hidden = true;
   input.insertAdjacentElement("afterend", box);
   input.setAttribute("autocomplete", "off");
-  let items = [], idx = -1;
-  const hl = () => $$("button", box).forEach((b, i) => b.classList.toggle("on", i === idx));
+  let items = [], idx = -1, imKasten = false;
+  const hl = () => $$("button", box).forEach((b, i) => { b.classList.toggle("on", i === idx); if (i === idx) b.scrollIntoView({ block: "nearest" }); });
   const draw = () => {
     const q = input.value.trim();
-    items = q ? getItems(q).slice(0, 6) : [];
+    items = q ? getItems(q).slice(0, max) : [];
     idx = -1;
     box.innerHTML = items.map((it, i) => `<button type="button" data-i="${i}"><span>${esc(it.label)}</span>${it.sub ? `<small>${esc(it.sub)}</small>` : ""}</button>`).join("");
-    box.hidden = !items.length;
+    box.hidden = !items.length; box.scrollTop = 0;
+    if (items.length) platz();
   };
-  const pick = (i) => { box.hidden = true; onPick(items[i]); };
+  // Liste nur so hoch wie Platz bis zum Bildschirmrand (Tastatur berücksichtigt); notfalls nach oben aufklappen
+  const platz = () => {
+    const vv = window.visualViewport, h = vv ? vv.height + vv.offsetTop : innerHeight, r = input.getBoundingClientRect();
+    const unten = h - r.bottom - 12, oben = r.top - 12, hoch = unten < 150 && oben > unten;
+    box.classList.toggle("up", hoch);
+    box.style.maxHeight = Math.max(110, Math.min(300, hoch ? oben : unten)) + "px";
+  };
+  const pick = (i) => { box.hidden = true; imKasten = false; onPick(items[i]); };
   input.addEventListener("input", draw);
   input.addEventListener("focus", draw);
   input.addEventListener("keydown", (e) => {
@@ -54,8 +62,12 @@ function attachSuggest(input, getItems, onPick) {
     else if (e.key === "Enter" && idx >= 0) { e.preventDefault(); e.stopImmediatePropagation(); pick(idx); }
     else if (e.key === "Escape") { box.hidden = true; e.stopPropagation(); }
   });
-  box.addEventListener("pointerdown", (e) => { const b = e.target.closest("[data-i]"); if (b) { e.preventDefault(); pick(+b.dataset.i); } });
-  input.addEventListener("blur", () => setTimeout(() => (box.hidden = true), 150));
+  // Erst beim Antippen (click) übernehmen – so lässt sich die Liste per Wischen scrollen
+  box.addEventListener("pointerdown", (e) => { imKasten = true; if (e.pointerType === "mouse") e.preventDefault(); });
+  box.addEventListener("click", (e) => { const b = e.target.closest("[data-i]"); if (b) pick(+b.dataset.i); });
+  const aussen = (e) => { if (!box.isConnected) return document.removeEventListener("pointerdown", aussen, true); if (!box.hidden && !box.contains(e.target) && e.target !== input) { box.hidden = true; imKasten = false; } };
+  document.addEventListener("pointerdown", aussen, true);
+  input.addEventListener("blur", () => setTimeout(() => { if (!imKasten) box.hidden = true; }, 150));
   return { close: () => (box.hidden = true) };
 }
 

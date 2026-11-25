@@ -9,6 +9,8 @@ const OFEN_ART = ["", "Ober-/Unterhitze", "Umluft", "Grill", "Heißluft"];
 const rz = { q: "", tag: null, open: null, from: null };   // Suche, Tag-Filter, geöffnetes Rezept, Rückweg (z. B. Essensplan)
 const rezeptById = (id) => db.rezepte.find((r) => r.id === id);
 const rezeptByTitel = (t) => db.rezepte.find((r) => normName(r.titel) === normName(t));
+/* Links in Notizen anklickbar machen (Text wird vorher escaped) */
+const linkify = (t) => esc(t).replace(/https?:\/\/[^\s<]+/g, (u) => `<a href="${u}" target="_blank" rel="noopener">${u.replace(/^https?:\/\/(www\.)?/, "").split("/")[0]} ↗</a>`);
 const rezeptLeer = (r) => !r.zutaten?.length && !String(r.zubereitung || "").trim();
 const alleTags = () => [...new Set([...hhSet().tags, ...db.rezepte.flatMap((r) => r.tags || [])])];
 
@@ -54,7 +56,7 @@ function viewRezept(r) {
     </div><div>
       <div class="h3 first"><span>Zubereitung</span></div>
       ${zubereitung ? `<div class="card zubereitung">${zubereitung.split(/\n\s*\n|\n/).filter((l) => l.trim()).map((l) => `<p>${esc(l)}</p>`).join("")}</div>` : `<div class="empty" style="padding:16px">Noch keine Zubereitung.</div>`}
-      ${r.notiz ? `<div class="h3"><span>Notiz</span></div><div class="card">${esc(r.notiz)}</div>` : ""}
+      ${r.notiz ? `<div class="h3"><span>Notiz</span></div><div class="card notiz">${linkify(r.notiz)}</div>` : ""}
     </div></div>
     <div class="btns" style="margin-top:18px">
       <button class="btn primary" data-redit>Bearbeiten</button>
@@ -149,6 +151,33 @@ function openRezept(id, from = null) {
   render(); window.scrollTo(0, 0);
 }
 
+
+/* ============================================================ Auswahl-Liste (Pop-up) */
+/* Alle Rezepte zum Auswählen – mit Suche und Tag-Filter. Liefert das gewählte Rezept oder null. */
+function rezeptWaehlen() {
+  return new Promise((res) => {
+    const tags = [...new Set(db.rezepte.flatMap((r) => r.tags || []))].sort((a, b) => a.localeCompare(b, "de"));
+    let tag = "";
+    const m = modal({ title: "Rezept wählen", full: true, onClose: () => res(null), body: `
+      <input data-rwq placeholder="Suchen …" autocomplete="off">
+      ${tags.length ? `<div class="chips rwtags">${tags.map((t) => `<button class="chip" data-rwt="${esc(t)}">${esc(t)}</button>`).join("")}</div>` : ""}
+      <div data-rwl></div>` });
+    const draw = () => {
+      const q = normName($("[data-rwq]", m).value);
+      const list = db.rezepte.filter((r) => (!q || normName(r.titel).includes(q)) && (!tag || (r.tags || []).includes(tag))).sort((a, b) => a.titel.localeCompare(b.titel, "de"));
+      $$("[data-rwt]", m).forEach((c) => c.classList.toggle("on", c.dataset.rwt === tag));
+      $("[data-rwl]", m).innerHTML = list.length ? `<div class="pick-group">${list.length} Rezepte</div><div class="pick-sub">${list.map((r) =>
+        `<button data-rwid="${r.id}">${esc(r.titel)}${(r.tags || []).length ? `<small>${esc(r.tags.slice(0, 3).join(", "))}</small>` : ""}</button>`).join("")}</div>`
+        : `<div class="empty">${db.rezepte.length ? "Kein Rezept passt zur Suche." : "Noch keine Rezepte gespeichert."}</div>`;
+    };
+    $("[data-rwq]", m).addEventListener("input", draw);
+    m.addEventListener("click", (e) => {
+      const t = e.target.closest("[data-rwt]"); if (t) { tag = tag === t.dataset.rwt ? "" : t.dataset.rwt; return draw(); }
+      const b = e.target.closest("[data-rwid]"); if (b) { m.onClose = null; closeModal(m); res(rezeptById(b.dataset.rwid)); }
+    });
+    draw();
+  });
+}
 
 /* ============================================================ Import (JSON) */
 /* Format: [{titel, tags[], portionen, zeitVor, zeitGesamt, ofenTemp, ofenArt, ofenDauer, zutaten[], zubereitung, notiz}]
