@@ -170,19 +170,24 @@ function rezeptWaehlen() {
 /* ============================================================ Export / Teilen (JSON) */
 /* Dasselbe Format, das der Import liest – ohne interne Felder (id, Urheber, Zeitstempel). */
 const EXPORT_FELDER = ["titel", "tags", "portionen", "zeitVor", "zeitGesamt", "ofenTemp", "ofenArt", "ofenDauer", "zutaten", "zubereitung", "notiz"];
-const dateiName = (t) => "Rezept_" + String(t).replace(/[^\wäöüÄÖÜß-]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "").slice(0, 50) + ".json";
+const dateiName = (t) => "Rezept_" + String(t).replace(/[^\wäöüÄÖÜß-]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "").slice(0, 50) + ".txt";
+const EXPORT_KOPF = "Rezepte aus der Haushalt-App – zum Übernehmen in der App: Einstellungen › Rezepte › „Rezepte importieren“ (Datei auswählen oder diesen Text einfügen).\n\n";
 function rezepteJSON(liste) {
-  return JSON.stringify({ format: "haushalt-rezepte", version: 1, exportiert: new Date().toISOString(), von: Store.memberName?.(ME()) || "",
+  return EXPORT_KOPF + JSON.stringify({ format: "haushalt-rezepte", version: 1, exportiert: new Date().toISOString(), von: Store.memberName?.(ME()) || "",
     rezepte: liste.map((r) => Object.fromEntries(EXPORT_FELDER.map((k) => [k, r[k] ?? (k === "tags" || k === "zutaten" ? [] : k.startsWith("zeit") || k.startsWith("ofenT") || k === "ofenDauer" ? null : "")]))) }, null, 1);
 }
 /* Auf dem Handy über das Teilen-Menü (WhatsApp, Mail …), sonst als Download */
 async function rezepteTeilen(liste, name) {
   if (!liste.length) return toast("Keine Rezepte ausgewählt");
-  const datei = new File([rezepteJSON(liste)], name, { type: "application/json" });
+  const datei = new File([rezepteJSON(liste)], name, { type: "text/plain" });
   const titel = liste.length === 1 ? `Rezept: ${liste[0].titel}` : `${liste.length} Rezepte`;
   if (!isDesktop() && navigator.canShare?.({ files: [datei] })) {
     try { await navigator.share({ files: [datei], title: titel, text: `${titel} – in der Haushalt-App unter Einstellungen › Rezepte › „Rezepte importieren“ einlesen.` }); return true; }
     catch (e) { if (e.name === "AbortError") return false; }   // abgebrochen → nichts tun; anderer Fehler → Download
+  } else if (!isDesktop() && navigator.share) {
+    // Browser kann keine Dateien teilen → Inhalt als Text teilen (z. B. als WhatsApp-Nachricht); Empfänger fügt ihn beim Import ein
+    try { await navigator.share({ title: titel, text: rezepteJSON(liste) }); return true; }
+    catch (e) { if (e.name === "AbortError") return false; }
   }
   const a = document.createElement("a"); a.href = URL.createObjectURL(datei); a.download = name;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
@@ -216,7 +221,7 @@ function rezepteExportieren() {
   m.addEventListener("change", (e) => { const c = e.target.closest("[data-xr]"); if (!c) return; c.checked ? gewaehlt.add(c.dataset.xr) : gewaehlt.delete(c.dataset.xr); draw(); });
   $("[data-xgo]", m).onclick = async () => {
     const liste = sichtbar().filter((r) => gewaehlt.has(r.id));
-    const name = liste.length === 1 ? dateiName(liste[0].titel) : `Rezepte_${tag ? tag.replace(/[^\wäöüÄÖÜß-]+/g, "_") + "_" : ""}${todayISO()}.json`;
+    const name = liste.length === 1 ? dateiName(liste[0].titel) : `Rezepte_${tag ? tag.replace(/[^\wäöüÄÖÜß-]+/g, "_") + "_" : ""}${todayISO()}.txt`;
     if (await rezepteTeilen(liste, name)) closeModal(m);
   };
   draw();
@@ -225,18 +230,33 @@ function rezepteExportieren() {
 /* ============================================================ Import (JSON) */
 /* Format: [{titel, tags[], portionen, zeitVor, zeitGesamt, ofenTemp, ofenArt, ofenDauer, zutaten[], zubereitung, notiz}]
    oder {rezepte:[…]}. Rezepte mit vorhandenem Titel werden übersprungen. */
+/* Text → Rezeptliste. Verträgt Text vor/nach dem Datenblock (z. B. Kopfzeile, WhatsApp-Zusätze). */
+function rezepteAusText(txt) {
+  const t = String(txt || ""), a = t.indexOf("{"), b = t.lastIndexOf("}");
+  if (a < 0 || b < a) return null;
+  let data; try { data = JSON.parse(t.slice(a, b + 1)); } catch { return null; }
+  return (Array.isArray(data) ? data : data.rezepte || (data.titel ? [data] : [])).filter((r) => r && String(r.titel || "").trim());
+}
 function rezepteImportieren() {
-  const inp = document.createElement("input"); inp.type = "file";
-  inp.onchange = () => {
-    const f = inp.files[0]; if (!f) return;
-    f.text().then((txt) => {
-      let data; try { data = JSON.parse(txt); } catch { toast("Datei ist kein gültiges JSON"); return; }
-      const liste = (Array.isArray(data) ? data : data.rezepte || []).filter((r) => r && String(r.titel || "").trim());
-      if (!liste.length) { toast("Keine Rezepte in der Datei gefunden"); return; }
-      importVorschau(liste);
-    });
+  const m = modal({ title: "Rezepte importieren", body: `
+    <p class="sub" style="margin-top:0">Eine Rezept-Datei (.txt) auswählen – oder den Text aus einer Nachricht hier einfügen.</p>
+    <div class="btns"><button class="btn primary" data-ifile>📄 Datei auswählen …</button></div>
+    <label class="f" style="margin-top:14px"><span>Oder Text einfügen</span><textarea data-itext rows="6" placeholder="Hier den kompletten Text einfügen (lange tippen → Einfügen)"></textarea></label>`,
+    foot: `<button class="btn" data-close>Abbrechen</button><button class="btn primary" data-igo disabled>Weiter</button>` });
+  const ta = $("[data-itext]", m), go = $("[data-igo]", m);
+  const weiter = (txt) => {
+    const liste = rezepteAusText(txt);
+    if (!liste) return toast("Darin sind keine Rezepte aus der Haushalt-App");
+    if (!liste.length) return toast("Keine Rezepte gefunden");
+    closeModal(m); importVorschau(liste);
   };
-  inp.click();
+  ta.addEventListener("input", () => (go.disabled = !ta.value.trim()));
+  go.onclick = () => weiter(ta.value);
+  $("[data-ifile]", m).onclick = () => {
+    const inp = document.createElement("input"); inp.type = "file";
+    inp.onchange = () => { const f = inp.files[0]; if (f) f.text().then(weiter); };
+    inp.click();
+  };
 }
 function importVorschau(liste) {
   const num = (v) => (v === "" || v == null || isNaN(+v) ? null : +v);
@@ -333,8 +353,8 @@ const Rezepte = {
       <p class="sub">Die Tags stehen beim Bearbeiten eines Rezepts zur Auswahl. Entfernen nimmt den Tag nur aus der Auswahl – Rezepte behalten ihn.</p>
       <div class="h3"><span>Austauschen</span></div>
       <div class="btns"><button class="btn" data-rexport>Rezepte exportieren …</button><button class="btn" data-rimport>Rezepte importieren …</button></div>
-      <p class="sub">Exportieren erstellt eine Rezept-Datei (.json) – auf dem Handy direkt zum Teilen, z. B. per WhatsApp oder Mail. Einzelne Rezepte teilst du auch über „Teilen“ im Rezept.<br>
-        Importieren liest so eine Datei ein und zeigt vorher eine Übersicht. Rezepte, deren Titel es schon gibt, werden übersprungen – außer sie sind noch leer, dann werden sie ergänzt.</p>`;
+      <p class="sub">Exportieren erstellt eine Rezept-Datei (.txt) – auf dem Handy direkt zum Teilen, z. B. per WhatsApp oder Mail. Einzelne Rezepte teilst du auch über „Teilen“ im Rezept.<br>
+        Importieren liest so eine Datei – oder ihren eingefügten Text – ein und zeigt vorher eine Übersicht. Rezepte, deren Titel es schon gibt, werden übersprungen – außer sie sind noch leer, dann werden sie ergänzt.</p>`;
   },
   settingsClick(e) {   // gibt true zurück, wenn der Klick hier behandelt wurde
     if (e.target.closest("[data-rimport]")) { rezepteImportieren(); return true; }
