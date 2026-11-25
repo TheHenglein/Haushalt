@@ -1,5 +1,5 @@
 // Offline-Unterstützung: App-Dateien zwischenspeichern, beim Öffnen zuerst die neueste Version versuchen.
-const CACHE = "hh-app-v5";
+const CACHE = "hh-app-v8";
 const FILES = ["./", "index.html", "styles.css", "config.js", "js/core.js", "js/store.js", "js/finanzen.js", "js/rezepte.js", "js/einkauf.js", "js/essen.js", "js/plan.js", "js/haushalt.js", "js/app.js",
   "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES))); self.skipWaiting(); });
