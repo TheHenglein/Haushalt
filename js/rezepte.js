@@ -61,6 +61,7 @@ function viewRezept(r) {
     <div class="btns" style="margin-top:18px">
       <button class="btn primary" data-redit>Bearbeiten</button>
       <button class="btn" data-rplan>📅 In den Essensplan</button>
+      <button class="btn" data-rshare>↗ Teilen</button>
       <button class="btn ghost" data-rdel>Löschen</button></div>`;
 }
 
@@ -156,34 +157,76 @@ function openRezept(id, from = null) {
 /* Alle Rezepte zum Auswählen – mit Suche und Tag-Filter. Liefert das gewählte Rezept oder null. */
 function rezeptWaehlen() {
   return new Promise((res) => {
-    const tags = [...new Set(db.rezepte.flatMap((r) => r.tags || []))].sort((a, b) => a.localeCompare(b, "de"));
-    let tag = "";
-    const m = modal({ title: "Rezept wählen", full: true, onClose: () => res(null), body: `
-      <input data-rwq placeholder="Suchen …" autocomplete="off">
-      ${tags.length ? `<div class="chips rwtags">${tags.map((t) => `<button class="chip" data-rwt="${esc(t)}">${esc(t)}</button>`).join("")}</div>` : ""}
-      <div data-rwl></div>` });
-    const draw = () => {
-      const q = normName($("[data-rwq]", m).value);
-      const list = db.rezepte.filter((r) => (!q || normName(r.titel).includes(q)) && (!tag || (r.tags || []).includes(tag))).sort((a, b) => a.titel.localeCompare(b.titel, "de"));
-      $$("[data-rwt]", m).forEach((c) => c.classList.toggle("on", c.dataset.rwt === tag));
-      $("[data-rwl]", m).innerHTML = list.length ? `<div class="pick-group">${list.length} Rezepte</div><div class="pick-sub">${list.map((r) =>
-        `<button data-rwid="${r.id}">${esc(r.titel)}${(r.tags || []).length ? `<small>${esc(r.tags.slice(0, 3).join(", "))}</small>` : ""}</button>`).join("")}</div>`
-        : `<div class="empty">${db.rezepte.length ? "Kein Rezept passt zur Suche." : "Noch keine Rezepte gespeichert."}</div>`;
-    };
-    $("[data-rwq]", m).addEventListener("input", draw);
+    const list = db.rezepte.slice().sort((a, b) => a.titel.localeCompare(b.titel, "de"));
+    const m = modal({ title: `Rezepte (${list.length})`, full: true, onClose: () => res(null), body: list.length
+      ? `<div class="pick-sub rwlist">${list.map((r) => `<button data-rwid="${r.id}">${esc(r.titel)}</button>`).join("")}</div>`
+      : `<div class="empty">Noch keine Rezepte gespeichert.</div>` });
     m.addEventListener("click", (e) => {
-      const t = e.target.closest("[data-rwt]"); if (t) { tag = tag === t.dataset.rwt ? "" : t.dataset.rwt; return draw(); }
       const b = e.target.closest("[data-rwid]"); if (b) { m.onClose = null; closeModal(m); res(rezeptById(b.dataset.rwid)); }
     });
-    draw();
   });
+}
+
+/* ============================================================ Export / Teilen (JSON) */
+/* Dasselbe Format, das der Import liest – ohne interne Felder (id, Urheber, Zeitstempel). */
+const EXPORT_FELDER = ["titel", "tags", "portionen", "zeitVor", "zeitGesamt", "ofenTemp", "ofenArt", "ofenDauer", "zutaten", "zubereitung", "notiz"];
+const dateiName = (t) => "Rezept_" + String(t).replace(/[^\wäöüÄÖÜß-]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "").slice(0, 50) + ".json";
+function rezepteJSON(liste) {
+  return JSON.stringify({ format: "haushalt-rezepte", version: 1, exportiert: new Date().toISOString(), von: Store.memberName?.(ME()) || "",
+    rezepte: liste.map((r) => Object.fromEntries(EXPORT_FELDER.map((k) => [k, r[k] ?? (k === "tags" || k === "zutaten" ? [] : k.startsWith("zeit") || k.startsWith("ofenT") || k === "ofenDauer" ? null : "")]))) }, null, 1);
+}
+/* Auf dem Handy über das Teilen-Menü (WhatsApp, Mail …), sonst als Download */
+async function rezepteTeilen(liste, name) {
+  if (!liste.length) return toast("Keine Rezepte ausgewählt");
+  const datei = new File([rezepteJSON(liste)], name, { type: "application/json" });
+  const titel = liste.length === 1 ? `Rezept: ${liste[0].titel}` : `${liste.length} Rezepte`;
+  if (!isDesktop() && navigator.canShare?.({ files: [datei] })) {
+    try { await navigator.share({ files: [datei], title: titel, text: `${titel} – in der Haushalt-App unter Einstellungen › Rezepte › „Rezepte importieren“ einlesen.` }); return true; }
+    catch (e) { if (e.name === "AbortError") return false; }   // abgebrochen → nichts tun; anderer Fehler → Download
+  }
+  const a = document.createElement("a"); a.href = URL.createObjectURL(datei); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  toast(`${name} gespeichert`); return true;
+}
+function rezepteExportieren() {
+  const alle = db.rezepte.slice().sort((a, b) => a.titel.localeCompare(b.titel, "de"));
+  if (!alle.length) return toast("Noch keine Rezepte zum Exportieren");
+  const tags = [...new Set(alle.flatMap((r) => r.tags || []))].sort((a, b) => a.localeCompare(b, "de"));
+  const gewaehlt = new Set(alle.map((r) => r.id));
+  let tag = "";
+  const m = modal({ title: "Rezepte exportieren", full: true, body: `
+    <p class="sub" style="margin-top:0">Die Datei enthält Titel, Tags, Zeiten, Zutaten, Zubereitung und Notiz – sonst nichts aus deinem Haushalt. Andere lesen sie unter Einstellungen › Rezepte › „Rezepte importieren“ ein.</p>
+    <div class="chips wrap" style="margin-bottom:10px"><button class="chip on" data-xt="">Alle</button>${tags.map((t) => `<button class="chip" data-xt="${esc(t)}">${esc(t)}</button>`).join("")}</div>
+    <div class="btns" style="margin-bottom:8px"><button class="btn small ghost" data-xall>Alle auswählen</button><button class="btn small ghost" data-xnone>Keine</button></div>
+    <div class="list" data-xl></div>`,
+    foot: `<button class="btn" data-close>Abbrechen</button><button class="btn primary" data-xgo></button>` });
+  const sichtbar = () => alle.filter((r) => !tag || (r.tags || []).includes(tag));
+  const draw = () => {
+    $$("[data-xt]", m).forEach((c) => c.classList.toggle("on", c.dataset.xt === tag));
+    $("[data-xl]", m).innerHTML = sichtbar().map((r) => `<label class="item checkrow"><input type="checkbox" data-xr="${r.id}" ${gewaehlt.has(r.id) ? "checked" : ""}>
+      <span class="m"><span class="t">${esc(r.titel)}</span><span class="s">${rezeptLeer(r) ? "nur Titel" : (r.zutaten || []).length + " Zutaten"}${r.tags?.length ? " · " + esc(r.tags.join(", ")) : ""}</span></span></label>`).join("");
+    const n = sichtbar().filter((r) => gewaehlt.has(r.id)).length;
+    const go = $("[data-xgo]", m); go.textContent = `${n} ${n === 1 ? "Rezept" : "Rezepte"} ${isDesktop() ? "speichern" : "teilen"}`; go.disabled = !n;
+  };
+  m.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-xt]"); if (t) { tag = t.dataset.xt; sichtbar().forEach((r) => gewaehlt.add(r.id)); return draw(); }
+    if (e.target.closest("[data-xall]")) { sichtbar().forEach((r) => gewaehlt.add(r.id)); return draw(); }
+    if (e.target.closest("[data-xnone]")) { sichtbar().forEach((r) => gewaehlt.delete(r.id)); return draw(); }
+  });
+  m.addEventListener("change", (e) => { const c = e.target.closest("[data-xr]"); if (!c) return; c.checked ? gewaehlt.add(c.dataset.xr) : gewaehlt.delete(c.dataset.xr); draw(); });
+  $("[data-xgo]", m).onclick = async () => {
+    const liste = sichtbar().filter((r) => gewaehlt.has(r.id));
+    const name = liste.length === 1 ? dateiName(liste[0].titel) : `Rezepte_${tag ? tag.replace(/[^\wäöüÄÖÜß-]+/g, "_") + "_" : ""}${todayISO()}.json`;
+    if (await rezepteTeilen(liste, name)) closeModal(m);
+  };
+  draw();
 }
 
 /* ============================================================ Import (JSON) */
 /* Format: [{titel, tags[], portionen, zeitVor, zeitGesamt, ofenTemp, ofenArt, ofenDauer, zutaten[], zubereitung, notiz}]
    oder {rezepte:[…]}. Rezepte mit vorhandenem Titel werden übersprungen. */
 function rezepteImportieren() {
-  const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".json,application/json";
+  const inp = document.createElement("input"); inp.type = "file";
   inp.onchange = () => {
     const f = inp.files[0]; if (!f) return;
     f.text().then((txt) => {
@@ -197,26 +240,47 @@ function rezepteImportieren() {
 }
 function importVorschau(liste) {
   const num = (v) => (v === "" || v == null || isNaN(+v) ? null : +v);
-  const neu = [], doppelt = [], gesehen = new Set();
-  liste.forEach((r) => { const k = normName(r.titel); (rezeptByTitel(r.titel) || gesehen.has(k) ? doppelt : neu).push(r); gesehen.add(k); });
+  const leer = (r) => !(r.zutaten || []).length && !String(r.zubereitung || "").trim();
+  // neu = gibt es noch nicht · ergaenzen = vorhandenes Rezept ist noch leer, die Datei bringt Inhalt · doppelt = übersprungen
+  const neu = [], ergaenzen = [], doppelt = [], gesehen = new Set();
+  liste.forEach((r) => {
+    const k = normName(r.titel), vorh = rezeptByTitel(r.titel);
+    if (gesehen.has(k)) doppelt.push(r);
+    else if (!vorh) neu.push(r);
+    else if (leer(vorh) && !leer(r)) ergaenzen.push(r);
+    else doppelt.push(r);
+    gesehen.add(k);
+  });
+  const zeile = (r, i, art) => `<label class="item checkrow"><input type="checkbox" data-imp="${art}:${i}" checked>
+      <span class="m"><span class="t">${esc(r.titel)}</span><span class="s">${[(r.zutaten || []).length + " Zutaten", (r.tags || []).join(", ")].filter(Boolean).join(" · ")}</span></span></label>`;
+  const anzahl = neu.length + ergaenzen.length;
   const m = modal({ title: "Rezepte importieren", full: true, body: `
-    <p class="sub" style="margin-top:0">${neu.length} neue Rezepte${doppelt.length ? ` · ${doppelt.length} schon vorhanden (werden übersprungen)` : ""}. Abwählen, was nicht übernommen werden soll.</p>
-    <div class="list">${neu.map((r, i) => `<label class="item checkrow"><input type="checkbox" data-imp="${i}" checked>
-      <span class="m"><span class="t">${esc(r.titel)}</span><span class="s">${[(r.zutaten || []).length + " Zutaten", (r.tags || []).join(", ")].filter(Boolean).join(" · ")}</span></span></label>`).join("")}</div>
+    <p class="sub" style="margin-top:0">${[neu.length ? `${neu.length} neu` : "", ergaenzen.length ? `${ergaenzen.length} ergänzen vorhandene leere Rezepte` : "", doppelt.length ? `${doppelt.length} schon vorhanden (werden übersprungen)` : ""].filter(Boolean).join(" · ") || "Nichts Neues in der Datei"}. Abwählen, was nicht übernommen werden soll.</p>
+    ${neu.length ? `<div class="h3"><span>Neu</span></div><div class="list">${neu.map((r, i) => zeile(r, i, "n")).join("")}</div>` : ""}
+    ${ergaenzen.length ? `<div class="h3"><span>Ergänzen</span></div><p class="sub">Diese Rezepte gibt es schon, aber ohne Zutaten und Zubereitung. Leere Felder werden aus der Datei gefüllt, Vorhandenes bleibt.</p>
+      <div class="list">${ergaenzen.map((r, i) => zeile(r, i, "e")).join("")}</div>` : ""}
     ${doppelt.length ? `<div class="h3"><span>Übersprungen</span></div><div class="list">${doppelt.map((r) => `<div class="item"><span class="m"><span class="t">${esc(r.titel)}</span><span class="s">gibt es schon</span></span></div>`).join("")}</div>` : ""}`,
-    foot: `<button class="btn" data-close>Abbrechen</button><button class="btn primary" data-go ${neu.length ? "" : "disabled"}>Importieren</button>` });
+    foot: `<button class="btn" data-close>Abbrechen</button><button class="btn primary" data-go ${anzahl ? "" : "disabled"}>Importieren</button>` });
   $("[data-go]", m).onclick = () => {
-    const sel = $$("[data-imp]", m).filter((c) => c.checked).map((c) => neu[+c.dataset.imp]);
-    const tags = hhSet().tags; let tagsNeu = false;
-    sel.forEach((r) => {
+    const sel = $$("[data-imp]", m).filter((c) => c.checked).map((c) => c.dataset.imp.split(":"));
+    const tags = hhSet().tags; let tagsNeu = false, nNeu = 0, nErg = 0;
+    const felder = (r) => ({ portionen: String(r.portionen || ""), zeitVor: num(r.zeitVor), zeitGesamt: num(r.zeitGesamt), ofenTemp: num(r.ofenTemp),
+      ofenArt: OFEN_ART.includes(r.ofenArt) ? r.ofenArt : "", ofenDauer: num(r.ofenDauer),
+      zutaten: (r.zutaten || []).map((z) => String(z).trim()).filter(Boolean), zubereitung: String(r.zubereitung || "").trim(), notiz: String(r.notiz || "") });
+    sel.forEach(([art, i]) => {
+      const r = (art === "n" ? neu : ergaenzen)[+i];
       (r.tags || []).forEach((t) => { if (!tags.some((x) => normName(x) === normName(t))) { tags.push(t); tagsNeu = true; } });
-      Store.put("rezepte", { id: "r" + uid(), titel: String(r.titel).trim(), tags: (r.tags || []).slice(), portionen: String(r.portionen || ""),
-        zeitVor: num(r.zeitVor), zeitGesamt: num(r.zeitGesamt), ofenTemp: num(r.ofenTemp), ofenArt: OFEN_ART.includes(r.ofenArt) ? r.ofenArt : "", ofenDauer: num(r.ofenDauer),
-        zutaten: (r.zutaten || []).map((z) => String(z).trim()).filter(Boolean), zubereitung: String(r.zubereitung || "").trim(), notiz: String(r.notiz || ""), by: ME() });
+      if (art === "n") { Store.put("rezepte", Object.assign({ id: "r" + uid(), titel: String(r.titel).trim(), tags: (r.tags || []).slice(), by: ME() }, felder(r))); nNeu++; return; }
+      const x = clone(rezeptByTitel(r.titel)), f = felder(r);
+      for (const k of Object.keys(f)) { if (k === "notiz") continue; const leerFeld = x[k] == null || x[k] === "" || (Array.isArray(x[k]) && !x[k].length); if (leerFeld) x[k] = f[k]; }
+      const neuZeilen = f.notiz.split("\n").filter((z) => z.trim() && !(x.notiz || "").includes(z.trim()));   // nur, was noch nicht drinsteht
+      if (neuZeilen.length) x.notiz = [x.notiz, ...neuZeilen].filter(Boolean).join("\n");
+      x.tags = [...new Set([...(x.tags || []), ...(r.tags || [])])];
+      Store.put("rezepte", x); nErg++;
     });
     if (tagsNeu) Store.touch("settings");
     Store.commit(); closeModal(m); render();
-    toast(`${sel.length} Rezepte importiert`);
+    toast([nNeu ? `${nNeu} Rezepte importiert` : "", nErg ? `${nErg} ergänzt` : ""].filter(Boolean).join(" · ") || "Nichts übernommen");
   };
 }
 
@@ -243,6 +307,7 @@ const Rezepte = {
     if (e.target.closest("[data-redit]")) { editRezept(r.id); return true; }
     if (e.target.closest("[data-rshop]")) { zutatenZurListe(r); return true; }
     if (e.target.closest("[data-rplan]")) { rezeptInPlan(r); return true; }
+    if (e.target.closest("[data-rshare]")) { rezepteTeilen([r], dateiName(r.titel)); return true; }
     if (e.target.closest("[data-rdel]")) {
       confirmBox("Rezept löschen?", `„${esc(r.titel)}“ wird für alle im Haushalt gelöscht. Einträge im Essensplan bleiben als Text stehen.`, "Löschen", true).then((ok) => {
         if (!ok) return; const copy = clone(r);
@@ -266,12 +331,14 @@ const Rezepte = {
         <button class="btn small ghost" data-tdel="${esc(t)}" aria-label="${esc(t)} entfernen">Entfernen</button></div>`).join("")}</div>
       <div class="btns" style="margin-top:12px"><button class="btn primary" data-tadd>+ Tag</button></div>
       <p class="sub">Die Tags stehen beim Bearbeiten eines Rezepts zur Auswahl. Entfernen nimmt den Tag nur aus der Auswahl – Rezepte behalten ihn.</p>
-      <div class="h3"><span>Importieren</span></div>
-      <div class="btns"><button class="btn" data-rimport>Rezepte importieren …</button></div>
-      <p class="sub">Liest eine Rezept-Datei (.json) ein und zeigt vor dem Übernehmen eine Übersicht. Rezepte, deren Titel es schon gibt, werden übersprungen.</p>`;
+      <div class="h3"><span>Austauschen</span></div>
+      <div class="btns"><button class="btn" data-rexport>Rezepte exportieren …</button><button class="btn" data-rimport>Rezepte importieren …</button></div>
+      <p class="sub">Exportieren erstellt eine Rezept-Datei (.json) – auf dem Handy direkt zum Teilen, z. B. per WhatsApp oder Mail. Einzelne Rezepte teilst du auch über „Teilen“ im Rezept.<br>
+        Importieren liest so eine Datei ein und zeigt vorher eine Übersicht. Rezepte, deren Titel es schon gibt, werden übersprungen – außer sie sind noch leer, dann werden sie ergänzt.</p>`;
   },
   settingsClick(e) {   // gibt true zurück, wenn der Klick hier behandelt wurde
     if (e.target.closest("[data-rimport]")) { rezepteImportieren(); return true; }
+    if (e.target.closest("[data-rexport]")) { rezepteExportieren(); return true; }
     const d = e.target.closest("[data-tdel]");
     if (d) { hhSet().tags = hhSet().tags.filter((t) => t !== d.dataset.tdel); Store.touch("settings"); Store.commit(); render(); return true; }
     if (e.target.closest("[data-tadd]")) {

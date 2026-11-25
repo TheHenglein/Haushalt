@@ -68,7 +68,9 @@ const Store = {
   me: null,   // { email, name }
   touched: new Set(),
   now: () => new Date().toISOString(),
-  stamp(rec) { rec.upd = this.now(); if (this.me?.email) rec.von = this.me.email; return rec; },
+  // Neuer Zeitstempel muss immer jünger sein als der alte – sonst ginge die Änderung beim Zusammenführen verloren
+  // (z. B. wenn die Uhr eines anderen Geräts vorgeht)
+  stamp(rec) { const n = this.now(); rec.upd = rec.upd && rec.upd >= n ? new Date(Date.parse(rec.upd) + 1).toISOString() : n; if (this.me?.email) rec.von = this.me.email; return rec; },
   myHidden(k) { return !!(k && k.versteckt && k.inhaber && this.me?.email && k.inhaber === this.me.email); },
   kontoAny(id) { return Data.mine?.konten.find((k) => k.id === id) || Data.shared?.konten.find((k) => k.id === id); },
   /* In welche Datei gehört ein Eintrag? */

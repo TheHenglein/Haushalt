@@ -39,6 +39,10 @@ function settingsPageView(page) {
       ${grp("privat", "Finanzen · Privat")}
       ${gewerbeAktiv() ? grp("gewerbe", "Finanzen · Gewerbe") : ""}
       ${grp("haushalt", "Haushalt")}
+      <div class="pick-group">Abstand zum Bildschirmrand</div>
+      <div class="seg" style="grid-template-columns:repeat(5,1fr)">${[["auto", "Auto"], ["0", "Keiner"], ["24", "Klein"], ["32", "Mittel"], ["40", "Groß"]].map(([k, l]) => `<button data-inset="${k}" class="${(lsGet("hh_insets")?.wahl || "auto") === k ? "on" : ""}">${l}</button>`).join("")}</div>
+      <p class="sub">Falls oben die Kopfzeile unter der Uhrzeit/Statusleiste verschwindet (oder unten Knöpfe verdeckt sind), hier den Abstand oben einstellen.</p>
+      <p class="sub" style="opacity:.7">Gemessen: oben ${Insets.top} px · unten ${Insets.bottom} px (${Insets.modus}; System ${Insets.envTop}/${Insets.envBottom}, Lücke ${Insets.luecke}, ${window.screen.height}/${innerHeight})</p>
       <p class="sub">Die Darstellung gilt nur für dich, nicht für die anderen im Haushalt.</p>`;
   }
   if (page === "speicher") {
@@ -68,6 +72,8 @@ const Einstellungen = {
   click(e) {
     const pm = setPage && pageModule(setPage); if (pm?.settingsClick && pm.settingsClick(e)) return true;
     const pg = e.target.closest("[data-spage]"); if (pg) { openSettings(pg.dataset.spage); return true; }
+    const ins = e.target.closest("[data-inset]");
+    if (ins) { const v = ins.dataset.inset; if (v === "auto") localStorage.removeItem("hh_insets"); else lsSet("hh_insets", { wahl: v, top: +v }); applyInsets(); render(); return true; }
     const md = e.target.closest("[data-mode]"); if (md) { lsSet(LS.theme, md.dataset.mode); render(); return true; }
     const fb = e.target.closest("[data-farbe]"); if (fb) { setFarbe(fb.dataset.b, fb.dataset.farbe); render(); return true; }
     const fs = e.target.closest("[data-fset]"); if (fs) { finSettingsAct(fs.dataset.fset, fs.dataset.b); return true; }
@@ -170,10 +176,10 @@ function renderSync() {
 
 /* =================================================================== Einrichtung: anmelden, anlegen, beitreten */
 const appUrl = () => location.origin + location.pathname.replace(/index\.html$/, "");
-function screen(html) { applyTheme("app"); $("#app").innerHTML = `<div class="welcome">${html}</div>`; }
+function zeigeScreen(html) { applyTheme("app"); $("#app").innerHTML = `<div class="welcome">${html}</div>`; }
 
 function welcome() {
-  screen(`<img src="icons/icon.svg" alt=""><h1>${APP_NAME}</h1>
+  zeigeScreen(`<img src="icons/icon.svg" alt=""><h1>${APP_NAME}</h1>
     <p>Alles für euren Haushalt an einem Ort – gemeinsam nutzbar.</p>
     ${CFG.googleClientId ? `<button class="btn primary" data-act="signin">Mit Google anmelden</button>
       <p class="sub">Die Daten liegen als Datei in Google Drive – bei der Person, die den Haushalt anlegt. Andere werden eingeladen.</p>` : `<div class="hint">Google ist noch nicht eingerichtet (Client-ID in config.js fehlt).</div>`}
@@ -192,7 +198,7 @@ async function signIn() {
 /* Haushalt auswählen, anlegen oder beitreten */
 function chooser(files = [], back = false) {
   const owner = (f) => f.ownedByMe ? "dein Haushalt" : "von " + (f.owners?.[0]?.displayName || f.owners?.[0]?.emailAddress || "jemand anderem");
-  screen(`<img src="icons/icon.svg" alt=""><h1>Hallo ${esc(firstName(Store.me?.name || Store.me?.email || ""))}!</h1>
+  zeigeScreen(`<img src="icons/icon.svg" alt=""><h1>Hallo ${esc(firstName(Store.me?.name || Store.me?.email || ""))}!</h1>
     ${files.length ? `<p>Welchen Haushalt möchtest du öffnen?</p><div class="list" style="text-align:left;margin-bottom:14px">${files.map((f) => `<button class="item" data-act="hh-open" data-id="${f.id}">
         <span class="ic">🏠</span><span class="m"><span class="t">${f.id === Sync.fileId ? "Aktueller Haushalt" : "Haushalt"}</span><span class="s">${esc(owner(f))} · zuletzt ${new Date(f.modifiedTime).toLocaleDateString("de-DE")}</span></span><span class="sub">›</span></button>`).join("")}</div>`
       : `<p>Wie möchtest du starten?</p>`}

@@ -7,7 +7,7 @@ const CFG = Object.assign({ googleClientId: "", googleApiKey: "", driveFolder: "
 // Projektnummer = App-ID für den Google Picker; steckt vorne in der Client-ID („123456-abc.apps.googleusercontent.com“)
 CFG.appId = (CFG.googleClientId.match(/^(\d+)-/) || [])[1] || "";
 const APP_NAME = "Haushalt";
-const APP_VERSION = "1.8";
+const APP_VERSION = "1.9";
 
 // eigene Namen (hh_), damit sich die Apps auf TheHenglein.github.io nicht in die Quere kommen (Haushaltsbuch: hb_, Deko-App: mk_)
 const LS = {
@@ -131,3 +131,28 @@ function applyTheme(bereich = "app") {
   root.style.setProperty("--acc", t.acc); root.style.setProperty("--acc-soft", v.soft); root.style.setProperty("--acc-ink", v.ink);
   const meta = $('meta[name="theme-color"]'); if (meta) meta.content = t.acc;
 }
+
+/* ---------- Abstand zu Status- und Navigationsleiste ----------
+   Android 15 zeichnet installierte Web-Apps bis an den Rand. Manche Browser (u. a. auf Samsung) melden dabei
+   aber keine Leistenhöhe (env() = 0). Dann schätzen wir: Reicht die App bis an den Bildschirmrand, liegt die
+   Statusleiste (~28 px) oben bzw. die Navigationsleiste (~48 px) unten darüber. */
+const Insets = { top: 0, bottom: 0, envTop: 0, envBottom: 0, modus: "" };
+function applyInsets() {
+  const p = document.createElement("div");
+  p.style.cssText = "position:fixed;visibility:hidden;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)";
+  document.body.appendChild(p);
+  const cs = getComputedStyle(p); Insets.envTop = parseFloat(cs.paddingTop) || 0; Insets.envBottom = parseFloat(cs.paddingBottom) || 0; p.remove();
+  const standalone = matchMedia("(display-mode: standalone), (display-mode: fullscreen)").matches || navigator.standalone;
+  const android = /Android/i.test(navigator.userAgent);
+  const luecke = window.screen.height - innerHeight;   // was vom Bildschirm NICHT zur App gehört
+  let top = Insets.envTop, bottom = Insets.envBottom; Insets.modus = "env";
+  if (standalone && android && !Insets.envTop && luecke < 24) { top = 28; Insets.modus = "geschätzt"; }
+  if (standalone && android && !Insets.envBottom && luecke < 8) { bottom = 48; Insets.modus = "geschätzt"; }
+  const man = lsGet("hh_insets");               // manuelle Korrektur aus den Einstellungen
+  if (man && typeof man.top === "number") { top = man.top; Insets.modus = "manuell"; }
+  Insets.top = top; Insets.bottom = bottom; Insets.luecke = luecke;
+  const r = document.documentElement.style;
+  r.setProperty("--sat", top + "px"); r.setProperty("--sab", bottom + "px");
+}
+if (document.body) applyInsets(); else document.addEventListener("DOMContentLoaded", applyInsets);
+addEventListener("resize", () => setTimeout(applyInsets, 50));

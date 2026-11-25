@@ -106,10 +106,9 @@ function slotDialog(d, s) {
             ${v.by === ich() ? `<button class="x small" data-sdel="${v.id}" aria-label="Vorschlag löschen">×</button>` : ""}</div>`; }).join("")}</div>
         ${multi && !p ? `<p class="sub">${gleichstand(d, s) ? "Gleichstand – wählt einen Vorschlag mit „Festlegen“ oder ändert eure Stimme." : `${st.length} von ${mitgliederIds().length} haben abgestimmt. Haben alle abgestimmt, steht der Vorschlag mit den meisten Stimmen fest.`}</p>` : ""}` : ""}
       <div class="pick-group">${p ? "Anderes Gericht" : multi ? "Gericht vorschlagen" : "Gericht eintragen"}</div>
-      <div class="combo"><div class="sugwrap"><input data-sin placeholder="Gericht eingeben oder Rezept suchen" maxlength="80"></div>
-        <button type="button" class="btn combo-btn" data-sliste aria-label="Alle Rezepte anzeigen">📖 Rezepte</button></div>
+      <div class="sugwrap"><input data-sin placeholder="Gericht eingeben oder Rezept suchen" maxlength="80"></div>
       <label class="f check" data-stubrow style="margin-top:8px"><input type="checkbox" data-sstubchk><span><b>Als Rezept speichern</b><small>legt bei den Rezepten ein Rezept mit diesem Titel an – den Rest füllst du später aus</small></span></label>
-      <div class="btns" style="margin-top:10px">${multi ? `<button class="btn" data-sadd="v">Vorschlagen</button>` : ""}<button class="btn primary" data-sadd="f">Fest eintragen</button></div>`;
+      <div class="btns slotbtns" style="margin-top:10px"><button type="button" class="btn" data-sliste>📖 Rezepte</button><span class="sp"></span>${multi ? `<button class="btn" data-sadd="v">Vorschlagen</button>` : ""}<button class="btn primary" data-sadd="f">Fest eintragen</button></div>`;
     const inp = $("[data-sin]", m), row = $("[data-stubrow]", m);
     const sync = () => { const r = gewaehlt || rezeptByTitel(inp.value); row.style.display = inp.value.trim() && !r ? "" : "none"; };
     attachSuggest(inp, (q) => db.rezepte.filter((r) => normName(r.titel).includes(normName(q))).sort((a, b) => a.titel.localeCompare(b.titel, "de"))

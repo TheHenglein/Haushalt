@@ -80,6 +80,5 @@ function soonModule(id, title, icon, hint, text) {
   };
 }
 const HAUSHALT_MODULE = [
-  Essensplan, Haushaltsplan, Rezepte, Einkauf,
-  soonModule("todo", "To-Dos", "✅", "Erledigen und abhaken", "Aufgaben für euch beide, mit Termin und Zuständigkeit.")
+  Essensplan, Haushaltsplan, Rezepte, Einkauf, Todos
 ];
